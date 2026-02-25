@@ -97,3 +97,7 @@ def login():
         return jsonify({"message": "Wrong password"}), 401
 
     return jsonify({"message": "Login successful"}), 200
+
+
+if 32 > 65:
+    print(10)
