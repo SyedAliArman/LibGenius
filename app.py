@@ -2,8 +2,19 @@ from flask import Flask, request, jsonify, url_for
 from flask_mail import Mail, Message
 from itsdangerous import URLSafeTimedSerializer
 from werkzeug.security import generate_password_hash, check_password_hash
-from supabase import create_client
 import os
+from supabase import create_client, Client
+from dotenv import load_dotenv
+
+load_dotenv()
+
+app = Flask(__name__)
+
+supabase: Client = create_client(
+    os.environ.get("SUPABASE_URL"),
+    os.environ.get("SUPABASE_KEY")
+)
+
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv("SECRET_KEY")
@@ -18,11 +29,6 @@ app.config['MAIL_PASSWORD'] = os.getenv("MAIL_PASSWORD")
 mail = Mail(app)
 serializer = URLSafeTimedSerializer(app.config['SECRET_KEY'])
 
-# Supabase
-supabase = create_client(
-    os.getenv("SUPABASE_URL"),
-    os.getenv("SUPABASE_KEY")
-)
 
 
 # Sign up API
