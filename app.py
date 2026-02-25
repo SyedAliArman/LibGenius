@@ -99,5 +99,3 @@ def login():
     return jsonify({"message": "Login successful"}), 200
 
 
-if 32 > 65:
-    print(10)
