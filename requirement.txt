@@ -1,0 +1,8 @@
+flask
+flask-mail
+flask-jwt-extended
+pydantic[email]
+bcrypt
+supabase
+python-dotenv
+gunicorn
