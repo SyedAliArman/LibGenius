@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, EmailStr, ValidationError
 import threading
 from datetime import datetime, timedelta, timezone
+from flask_cors import CORS
 
 # JWT IMPORT
 from flask_jwt_extended import (
@@ -14,6 +15,17 @@ from flask_jwt_extended import (
     jwt_required,
     get_jwt_identity
 )
+
+
+CORS(app)
+CORS(app, resources={
+    r"/api/*": {
+        "origins": [
+            "http://localhost:3000",
+            "https://libgenius.netlify.app/"
+        ]
+    }
+})
 
 load_dotenv()
 
