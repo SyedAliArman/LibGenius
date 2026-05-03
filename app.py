@@ -149,7 +149,7 @@ def verify():
     if datetime.now(timezone.utc) - otp_time > timedelta(minutes=5):
         return jsonify({"error": "OTP expired"}), 400
  
-    supabase.table("users").update({"otp_verified": True, "otp": None}).eq("cms_id", cms_id).execute()
+    supabase.table("users").update({"is_verified": True, "otp": None}).eq("cms_id", cms_id).execute()
  
     # Users table se pura data fetch karo
     user_res = supabase.table("users").select("*").eq("cms_id", cms_id).execute()
