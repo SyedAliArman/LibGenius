@@ -17,7 +17,10 @@ from flask_jwt_extended import (
 )
 
 
-CORS(app)
+load_dotenv()
+
+app = Flask(__name__)
+
 CORS(app, resources={
     r"/api/*": {
         "origins": [
@@ -26,10 +29,6 @@ CORS(app, resources={
         ]
     }
 })
-
-load_dotenv()
-
-app = Flask(__name__)
 
 # ================================
 # SUPABASE CONFRIGURATION
