@@ -60,7 +60,13 @@ mail = Mail(app)
 
 def send_email_async(msg):
     with app.app_context():
-        mail.send(msg)
+        try:
+            mail.send(msg)
+            print(f"Successfully sent email to {msg.recipients}")
+        except Exception as e:
+            print(f"Failed to send email to {msg.recipients}. Error: {str(e)}")
+            import traceback
+            traceback.print_exc()
 
 
 # ===========================================================
