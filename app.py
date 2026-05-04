@@ -132,7 +132,6 @@ def signup():
         recipients=[body.email],
         body=f"Your OTP for App is: {otp}. It will expire in 5 minutes"
         )
-        mail.send(msg)
         threading.Thread(target=send_email_async, args=(msg,)).start()
         return jsonify({
             "message": "Student found! OTP sent to your email.",
