@@ -4,7 +4,6 @@ import os, uuid, bcrypt, random
 from supabase import create_client, Client
 from dotenv import load_dotenv
 from pydantic import BaseModel, EmailStr, ValidationError
-import threading
 from datetime import datetime, timedelta, timezone
 from flask_cors import CORS
 
@@ -132,13 +131,14 @@ def signup():
         recipients=[body.email],
         body=f"Your OTP for App is: {otp}. It will expire in 5 minutes"
         )
-        threading.Thread(target=send_email_async, args=(msg,)).start()
+        mail.send(msg)
         return jsonify({
             "message": "Student found! OTP sent to your email.",
             "student_data": insert_res.data[0] if insert_res.data else None
         }), 201
     except Exception as e:
-        return jsonify({"error Failed to send email": str(e)}), 500
+        print(f"Failed to send email to {body.email}. Error: {str(e)}")
+        return jsonify({"error": "Failed to send email"}), 500
 
 # =========================
 # 2. VERIFY OTP                                                                                                                2
@@ -207,7 +207,11 @@ def resend_otp():
         body=f"Your new LibGenius verification code is: {new_otp}. It will expire in 5 minutes."
     )
 
-    threading.Thread(target=send_email_async, args=(msg,)).start()
+    try:
+        mail.send(msg)
+    except Exception as e:
+        print(f"Failed to send email to {user['email']}. Error: {str(e)}")
+        return jsonify({"error": "Failed to send email"}), 500
 
     return jsonify({"message": "New OTP sent to your email!"})
 
@@ -289,7 +293,11 @@ def forgot_password():
         body=f"Your OTP for forget password is: {otp}. It will expire in 5 minutes"
     )
 
-    threading.Thread(target=send_email_async, args=(msg,)).start()
+    try:
+        mail.send(msg)
+    except Exception as e:
+        print(f"Failed to send email to {email}. Error: {str(e)}")
+        return jsonify({"error": "Failed to send email"}), 500
 
     return jsonify({"message": f"OTP for your Forgot Password sent to your email"})
 
@@ -603,7 +611,11 @@ def admin_forgot_password():
         recipients=[body.email],
         body=f"Your otp for forget password is : {otp}. It will expire in 5 minutes."
     )
-    threading.Thread(target=send_email_async, args=(msg,)).start()
+    try:
+        mail.send(msg)
+    except Exception as e:
+        print(f"Failed to send email to {body.email}. Error: {str(e)}")
+        return jsonify({"error": "Failed to send email"}), 500
  
     return jsonify({"message": "OTP sent to your email"})
  
