@@ -664,21 +664,15 @@ def admin_reset_password():
 
 
 # ==================================================================================================
-# BOOKS APIs - ADMIN  (JWT♥)
+# BOOKS APIs (JWT♥)
 # ==================================================================================================
  
 # =========================
-# GET ALL BOOKS                                                                                                                                   15
+# GET ALL BOOKS BY (ADMIN and USERS both)                                                                                                                                  15
 # =========================
-@app.route("/api/admin/get-book", methods=["GET"])
+@app.route("/api/get-books", methods=["GET"])
 @jwt_required()
 def get_all_books():
-    identity = get_jwt_identity()
- 
-    # Check karo yeh admin hai
-    if not identity.startswith("admin:"):
-        return jsonify({"error": "Unauthorized"}), 403
- 
     res = supabase.table("book").select("*").execute()
  
     if not res.data:
@@ -688,9 +682,7 @@ def get_all_books():
         "message": "Books fetched successfully",
         "total": len(res.data),
         "books": res.data
-
     }), 200
-
 
 # ================================
 # GET BOOK BY ID BY ADMIN  (JWT♥)                                                                                                                   16
