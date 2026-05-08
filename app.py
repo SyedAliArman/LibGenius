@@ -673,7 +673,7 @@ def admin_reset_password():
 @app.route("/api/get-books", methods=["GET"])
 @jwt_required()
 def get_all_books():
-    res = supabase.table("book").select("*").execute()
+    res = supabase.table("book").select("*, review(rating_star_number, rating_description, id, users(student_name, user_id, cms_id, email, profile_picture_url))").execute()
  
     if not res.data:
         return jsonify({"message": "No books found", "books": []}), 200
@@ -710,22 +710,8 @@ def get_book_by_id(book_id):
 # =========================
 # ADD BOOK  BY ADMIN  (JWT♥)                                                                                                             17
 # =========================
- 
-class AddBookRequest(BaseModel):
-    title: str
-    author: str
-    category_id: int
-    isbn: str
-    quantity: int
-    shelf_no: str
-    description: str | None = None
-    publisher_name: str | None = None
-    publish_year: str | None = None
-    language: str | None = None
-    book_pdf_url: str 
-    status: str = "Available"
- 
-@app.route("/api/admin/add-books", methods=["POST"])
+
+@app.route("/api/admin/add-book", methods=["POST"])
 @jwt_required()
 def add_book():
     identity = get_jwt_identity()
@@ -733,18 +719,72 @@ def add_book():
     if not identity.startswith("admin:"):
         return jsonify({"error": "Unauthorized"}), 403
  
-    try:
-        body = AddBookRequest(**request.json)
-    except ValidationError as e:
-        return jsonify({"error": "Invalid data format", "details": e.errors()}), 400
+    # Required fields check karo
+    required_fields = ["title", "author", "category_id", "isbn", "quantity", "shelf_no"]
+    for field in required_fields:
+        if not request.form.get(field):
+            return jsonify({"error": f"{field} zaroori hai"}), 400
  
     # Check karo same ISBN already exist toh nahi karta
-    isbn_check = supabase.table("book").select("isbn").eq("isbn", body.isbn).execute()
+    isbn_check = supabase.table("book").select("isbn").eq("isbn", request.form.get("isbn")).execute()
     if isbn_check.data:
         return jsonify({"error": "Book with this ISBN already exists"}), 400
  
+    book_pdf_url = None
+    cover_image_url = None
+ 
+    # PDF upload karo
+    if "book_pdf" in request.files:
+        pdf_file = request.files["book_pdf"]
+        if pdf_file.filename != "":
+            if not pdf_file.filename.endswith(".pdf"):
+                return jsonify({"error": "Sirf PDF file allowed hai"}), 400
+            try:
+                pdf_name = f"{request.form.get('title')}.pdf"
+                supabase.storage.from_("book-pdfs").upload(
+                    path=pdf_name,
+                    file=pdf_file.read(),
+                    file_options={"content-type": "application/pdf", "upsert": "true"}
+                )
+                book_pdf_url = supabase.storage.from_("book-pdfs").get_public_url(pdf_name)
+            except Exception as e:
+                return jsonify({"error": f"PDF upload failed: {str(e)}"}), 500
+ 
+    # Cover image upload karo
+    if "book_cover" in request.files:
+        cover_file = request.files["book_cover"]
+        if cover_file.filename != "":
+            allowed_ext = {"png", "jpg", "jpeg"}
+            file_ext = cover_file.filename.rsplit(".", 1)[-1].lower()
+            if file_ext not in allowed_ext:
+                return jsonify({"error": "Sirf png, jpg, jpeg allowed hai"}), 400
+            try:
+                cover_name = f"{request.form.get('title')}.{file_ext}"
+                supabase.storage.from_("book-covers").upload(
+                    path=cover_name,
+                    file=cover_file.read(),
+                    file_options={"content-type": cover_file.content_type, "upsert": "true"}
+                )
+                book_cover_page = supabase.storage.from_("book-covers").get_public_url(cover_name)
+            except Exception as e:
+                return jsonify({"error": f"Cover image upload failed: {str(e)}"}), 500
+ 
     # Book insert karo
-    res = supabase.table("book").insert(body.model_dump()).execute()
+    res = supabase.table("book").insert({
+        "title": request.form.get("title"),
+        "author": request.form.get("author"),
+        "category_id": int(request.form.get("category_id")),
+        "isbn": request.form.get("isbn"),
+        "quantity": int(request.form.get("quantity")),
+        "shelf_no": request.form.get("shelf_no"),
+        "description": request.form.get("description"),
+        "publisher_name": request.form.get("publisher_name"),
+        "publish_year": request.form.get("publish_year"),
+        "language": request.form.get("language"),
+        "book_pdf_url": book_pdf_url,
+        "book_cover_page": book_cover_page,
+        "status": request.form.get("status", "Available")
+    }).execute()
  
     if not res.data:
         return jsonify({"error": "Failed to add book"}), 500
@@ -753,6 +793,96 @@ def add_book():
         "message": "Book added successfully",
         "book": res.data[0]
     }), 201
+
+# =========================
+# UPDATE BOOK DETAILS BY ADMIN (JWT♥)
+# =========================
+class UpdateBookRequest(BaseModel):
+    title: str | None = None
+    author: str | None = None
+    category_id: int | None = None
+    isbn: str | None = None
+    quantity: int | None = None
+    shelf_no: str | None = None
+    description: str | None = None
+    publisher_year: str | None = None
+    language: str | None = None
+    status: str | None = None
+ 
+@app.route("/api/admin/books/<int:book_id>", methods=["PUT"])
+@jwt_required()
+def update_book(book_id):
+    identity = get_jwt_identity()
+    if not identity.startswith("admin:"):
+        return jsonify({"error": "Unauthorized"}), 403
+ 
+    # Book exist check
+    book_check = supabase.table("book").select("*").eq("book_id", book_id).execute()
+    if not book_check.data:
+        return jsonify({"error": "Book not found"}), 404
+ 
+    book = book_check.data[0]
+    update_data = {}
+ 
+    # Text fields form-data se lo
+    text_fields = ["title", "author", "isbn", "shelf_no", "description", "publisher_year", "language", "status"]
+    for field in text_fields:
+        if request.form.get(field):
+            update_data[field] = request.form.get(field)
+ 
+    if request.form.get("category_id"):
+        update_data["category_id"] = int(request.form.get("category_id"))
+ 
+    if request.form.get("quantity"):
+        update_data["quantity"] = int(request.form.get("quantity"))
+ 
+    # PDF update karo agar aayi hai
+    if "book_pdf" in request.files:
+        pdf_file = request.files["book_pdf"]
+        if pdf_file.filename != "":
+            if not pdf_file.filename.endswith(".pdf"):
+                return jsonify({"error": "Sirf PDF file allowed hai"}), 400
+            try:
+                title = request.form.get("title") or book["title"]
+                pdf_name = f"{title}.pdf"
+                supabase.storage.from_("book-pdfs").upload(
+                    path=pdf_name,
+                    file=pdf_file.read(),
+                    file_options={"content-type": "application/pdf", "upsert": "true"}
+                )
+                update_data["book_pdf_url"] = supabase.storage.from_("book-pdfs").get_public_url(pdf_name)
+            except Exception as e:
+                return jsonify({"error": f"PDF upload failed: {str(e)}"}), 500
+ 
+    # Cover image update karo agar aayi hai
+    if "book_cover" in request.files:
+        cover_file = request.files["book_cover"]
+        if cover_file.filename != "":
+            allowed_ext = {"png", "jpg", "jpeg"}
+            file_ext = cover_file.filename.rsplit(".", 1)[-1].lower()
+            if file_ext not in allowed_ext:
+                return jsonify({"error": "Sirf png, jpg, jpeg allowed hai"}), 400
+            try:
+                title = request.form.get("title") or book["title"]
+                cover_name = f"{title}.{file_ext}"
+                supabase.storage.from_("book-covers").upload(
+                    path=cover_name,
+                    file=cover_file.read(),
+                    file_options={"content-type": cover_file.content_type, "upsert": "true"}
+                )
+                update_data["book_cover_page"] = supabase.storage.from_("book-covers").get_public_url(cover_name)
+            except Exception as e:
+                return jsonify({"error": f"Cover image upload failed: {str(e)}"}), 500
+ 
+    if not update_data:
+        return jsonify({"error": "No data to update"}), 400
+ 
+    res = supabase.table("book").update(update_data).eq("book_id", book_id).execute()
+ 
+    return jsonify({
+        "message": "Book updated successfully",
+        "book": res.data[0]
+    }), 200
  
 
 # =========================
@@ -925,76 +1055,400 @@ def get_book_reviews(book_id):
     }), 200
  
 
-
-
-
-@app.route('/api/update-profiles', methods=['PUT'])
+# ==================================================================================================
+# ISSUED BOOKS APIs
+# ==================================================================================================
+ 
+# =========================
+# ISSUE BOOK TO STUDENT (ADMIN) (JWT)
+# Rules: Max 4 books per user, book must be available
+# =========================
+class IssueBookRequest(BaseModel):
+    user_id: str
+    book_id: int
+ 
+@app.route("/api/admin/issue-book", methods=["POST"])
 @jwt_required()
-def update_profile():
-    cms_id = get_jwt_identity()
- 
-    # Check karo user exist karta hai
-    check = supabase.table("users").select("cms_id").eq("cms_id", cms_id).execute()
-    if not check.data:
-        return jsonify({"error": "Student not found"}), 404
- 
-    update_data = {}
- 
-    # Text fields form-data se lo
-    if request.form.get("student_name"):
-        update_data["student_name"] = request.form.get("student_name")
-    if request.form.get("department"):
-        update_data["department"] = request.form.get("department")
-    if request.form.get("faculty"):
-        update_data["faculty"] = request.form.get("faculty")
-    if request.form.get("semester"):
-        update_data["semester"] = request.form.get("semester")
-    if request.form.get("campus"):
-        update_data["campus"] = request.form.get("campus")
-    if request.form.get("phone_no"):
-        update_data["phone_no"] = request.form.get("phone_no")
-    if request.form.get("date_of_birth"):
-        dob = request.form.get("date_of_birth")
-        try:
-            datetime.strptime(dob, "%Y-%m-%d")
-            update_data["date_of_birth"] = dob
-        except ValueError:
-            return jsonify({"error": "Invalid date format (YYYY-MM-DD required)"}), 400
- 
-    # Profile picture aayi hai toh upload karo
-    if 'profile_picture' in request.files:
-        file = request.files['profile_picture']
-        if file.filename != '':
-            allowed_extensions = {'png', 'jpg', 'jpeg'}
-            file_ext = file.filename.rsplit('.', 1)[-1].lower()
-            if file_ext not in allowed_extensions:
-                return jsonify({"error": "Only png, jpg, jpeg files allowed"}), 400
-            try:
-                file_name = f"{cms_id}.{file_ext}"
-                file_data = file.read()
-                supabase.storage.from_("Profile-Pictures").upload(
-                    path=file_name,
-                    file=file_data,
-                    file_options={"content-type": file.content_type, "upsert": "true"}
-                )
-                image_url = supabase.storage.from_("Profile-Pictures").get_public_url(file_name)
-                update_data["profile_picture_url"] = image_url
-            except Exception as e:
-                return jsonify({"error": f"Image upload failed: {str(e)}"}), 500
- 
-    # Kuch update karna hai ya nahi
-    if not update_data:
-        return jsonify({"error": "No data to update"}), 400
+def issue_book():
+    identity = get_jwt_identity()
+    if not identity.startswith("admin:"):
+        return jsonify({"error": "Unauthorized"}), 403
  
     try:
-        supabase.table("users").update(update_data).eq("cms_id", cms_id).execute()
-        updated_res = supabase.table("users").select("*").eq("cms_id", cms_id).execute()
-        return jsonify({
-            "message": "Profile updated successfully!",
-            "student": updated_res.data[0]
-        }), 200
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        body = IssueBookRequest(**request.json)
+    except ValidationError:
+        return jsonify({"error": "Invalid data format"}), 400
+ 
+    user_id = body.user_id
+    book_id = body.book_id
+ 
+    # Check user exists or not
+    user_check = supabase.table("users").select("user_id", "student_name").eq("user_id", user_id).execute()
+    if not user_check.data:
+        return jsonify({"error": "User not found"}), 404
+ 
+    # Check book exists or not
+    book_check = supabase.table("book").select("*").eq("book_id", book_id).execute()
+    if not book_check.data:
+        return jsonify({"error": "Book not found"}), 404
+ 
+    book = book_check.data[0]
+ 
+    # Check book is available or not
+    if book["quantity"] <= 0 or book["status"].lower() != "available":
+        return jsonify({"error": "Book not available"}), 400
+ 
+    # Check user already have 4 books or not
+    issued_check = supabase.table("issued_books").select("issue_id").eq("user_id", user_id).eq("status", "issued").execute()
+    if len(issued_check.data) >= 4:
+        return jsonify({"error": "Student already has 4 books issued. Return a book first."}), 400
+ 
+    # Check same book already issued to this user or not
+    duplicate_check = supabase.table("issued_books").select("issue_id").eq("user_id", user_id).eq("book_id", book_id).eq("status", "issued").execute()
+    if duplicate_check.data:
+        return jsonify({"error": "This book is already issued to this student"}), 400
+ 
+    # Issue the book - due date 14 days later
+    issue_date = datetime.now(timezone.utc).date().isoformat()
+    due_date = (datetime.now(timezone.utc) + timedelta(days=14)).date().isoformat()
+ 
+    res = supabase.table("issued_books").insert({
+        "user_id": user_id,
+        "book_id": book_id,
+        "issue_date": issue_date,
+        "due_date": due_date,
+        "status": "issued"
+    }).execute()
+ 
+    # Decrease book quantity
+    new_quantity = book["quantity"] - 1
+    new_status = "available" if new_quantity > 0 else "unavailable"
+    supabase.table("book").update({
+        "quantity": new_quantity,
+        "status": new_status
+    }).eq("book_id", book_id).execute()
+ 
+    return jsonify({
+        "message": "Book issued successfully",
+        "issue": res.data[0],
+        "due_date": due_date
+    }), 201
+
+
+# =========================
+# GET CURRENTLY ISSUED BOOKS BY USER (USER) (JWT♥)
+# Only logged in user sees own issued books
+# =========================
+@app.route("/api/issued-books", methods=["GET"])
+@jwt_required()
+def get_my_issued_books():
+    cms_id = get_jwt_identity()
+ 
+    # cms_id se user_id nikalo
+    user_res = supabase.table("users").select("user_id", "student_name").eq("cms_id", cms_id).execute()
+    if not user_res.data:
+        return jsonify({"error": "User not found"}), 404
+ 
+    user_id = user_res.data[0]["user_id"]
+ 
+    # Sirf currently issued books
+    res = supabase.table("issued_books").select("*, book(title, author, shelf_no)").eq("user_id", user_id).eq("status", "issued").execute()
+ 
+    return jsonify({
+        "message": "Issued books fetched successfully",
+        "total": len(res.data),
+        "issued_books": res.data
+    }), 200
+
+
+# =========================
+# GET ALL ISSUED BOOKS WITH STUDENT DETAILS (ADMIN) (JWT♥)
+# Admin get all issued books with student details
+# =========================
+@app.route("/api/admin/issued-books", methods=["GET"])
+@jwt_required()
+def get_all_issued_books():
+    identity = get_jwt_identity()
+    if not identity.startswith("admin:"):
+        return jsonify({"error": "Unauthorized"}), 403
+ 
+    res = supabase.table("issued_books").select("*, users(student_name, cms_id, email, campus, department, faculty, phone_no, date_of_birth, is_blocked, semester, user_id), book(title, author, shelf_no)").eq("status", "issued").execute()
+ 
+    return jsonify({
+        "message": "All issued books fetched successfully",
+        "total": len(res.data),
+        "issued_books": res.data
+    }), 200
+
+
+# =========================
+# GET ALL REGISTERED STUDENTS (ADMIN) (JWT♥)
+# Admin get all students data
+# =========================
+@app.route("/api/admin/students", methods=["GET"])
+@jwt_required()
+def get_all_students():
+    identity = get_jwt_identity()
+    if not identity.startswith("admin:"):
+        return jsonify({"error": "Unauthorized"}), 403
+ 
+    res = supabase.table("users").select("user_id, cms_id, student_name, email, department, faculty, semester, campus, date_of_birth, phone_no, profile_picture_url, is_blocked").execute()
+ 
+    return jsonify({
+        "message": "Students fetched successfully",
+        "total": len(res.data),
+        "student_data": res.data
+    }), 200
+
+# =========================
+# GET ALL FINES (ADMIN) (JWT♥)
+# Admin can see all fines
+# =========================
+@app.route("/api/admin/fines", methods=["GET"])
+@jwt_required()
+def get_all_fines():
+    identity = get_jwt_identity()
+    if not identity.startswith("admin:"):
+        return jsonify({"error": "Unauthorized"}), 403
+ 
+    res = supabase.table("fine").select("*, users(student_name, cms_id, email), issued_books(book_id, due_date)").execute()
+ 
+    return jsonify({
+        "message": "Fines fetched successfully",
+        "total": len(res.data),
+        "fines": res.data
+    }), 200
+
+
+# =========================
+# GET MY FINES (USER) (JWT♥)
+# User can see their fines
+# =========================
+@app.route("/api/my-fines", methods=["GET"])
+@jwt_required()
+def get_my_fines():
+    cms_id = get_jwt_identity()
+ 
+    user_res = supabase.table("users").select("user_id").eq("cms_id", cms_id).execute()
+    if not user_res.data:
+        return jsonify({"error": "User not found"}), 404
+ 
+    user_id = user_res.data[0]["user_id"]
+ 
+    res = supabase.table("fine").select("*, issued_books(book_id, due_date, book(title))").eq("user_id", user_id).execute()
+ 
+    total_unpaid = sum(f["fine_amount"] for f in res.data if not f["is_paid"])
+ 
+    return jsonify({
+        "message": "Fines fetched successfully",
+        "total_fines": len(res.data),
+        "total_unpaid_amount": total_unpaid,
+        "fines": res.data
+    }), 200
+
+# =========================
+# MARK FINE AS PAID (ADMIN) (JWT♥)
+# Admin can mark fine as paid
+# =========================
+class MarkFinePaidRequest(BaseModel):
+    fine_id: int
+ 
+@app.route("/api/admin/mark-fine-paid", methods=["POST"])
+@jwt_required()
+def mark_fine_paid():
+    identity = get_jwt_identity()
+    if not identity.startswith("admin:"):
+        return jsonify({"error": "Unauthorized"}), 403
+ 
+    try:
+        body = MarkFinePaidRequest(**request.json)
+    except ValidationError:
+        return jsonify({"error": "Invalid data format"}), 400
+ 
+    # Check karo fine exist karti hai
+    fine_check = supabase.table("fine").select("*").eq("fine_id", body.fine_id).execute()
+    if not fine_check.data:
+        return jsonify({"error": "Fine not found"}), 404
+ 
+    if fine_check.data[0]["is_paid"]:
+        return jsonify({"error": "Fine already paid"}), 400
+ 
+    # Fine paid mark karo
+    res = supabase.table("fine").update({
+        "is_paid": True,
+        "paid_date": datetime.now(timezone.utc).date().isoformat()
+    }).eq("fine_id", body.fine_id).execute()
+ 
+    return jsonify({
+        "message": "Fine marked as paid successfully",
+        "fine": res.data[0]
+    }), 200 
+
+
+# =========================
+# GET ISSUED BOOKS HISTORY (USER) (JWT♥)
+# User can see their issued books history
+# =========================
+@app.route("/api/my-issued-books/history", methods=["GET"])
+@jwt_required()
+def get_my_issued_history():
+    cms_id = get_jwt_identity()
+ 
+    user_res = supabase.table("users").select("user_id").eq("cms_id", cms_id).execute()
+    if not user_res.data:
+        return jsonify({"error": "User not found"}), 404
+ 
+    user_id = user_res.data[0]["user_id"]
+ 
+    # Sari history - issued aur returned dono
+    res = supabase.table("issued_books").select("*, book(title, author, shelf_no)").eq("user_id", user_id).execute()
+ 
+    return jsonify({
+        "message": "History fetched successfully",
+        "total": len(res.data),
+        "history": res.data
+    }), 200
+
+
+# =========================
+# GET ISSUED BOOKS HISTORY (ADMIN) (JWT♥)
+# Admin can see all issued books history
+# =========================
+@app.route("/api/admin/issued-books/history", methods=["GET"])
+@jwt_required()
+def get_admin_issued_history():
+    identity = get_jwt_identity()
+    if not identity.startswith("admin:"):
+        return jsonify({"error": "Unauthorized"}), 403
+ 
+    res = supabase.table("issued_books").select("*, users(student_name, cms_id, email), book(title, author)").execute()
+ 
+    return jsonify({
+        "message": "Full history fetched successfully",
+        "total": len(res.data),
+        "history": res.data
+    }), 200
+
+
+# # =========================
+# # RETURN BOOK VIA QR SCAN (USER) (JWT♥)
+# # In QR issue_id is applied on book cover , scanned QR will provide issue_id of the book
+# # Return record is created in return_logs table, and fine is created in fine table if book is late returned
+# # =========================
+# class ReturnBookRequest(BaseModel):
+#     issue_id: int
+ 
+# @app.route("/api/return-book", methods=["POST"])
+# @jwt_required()
+# def return_book():
+#     cms_id = get_jwt_identity()
+ 
+#     try:
+#         body = ReturnBookRequest(**request.json)
+#     except ValidationError:
+#         return jsonify({"error": "Invalid data format"}), 400
+ 
+#     issue_id = body.issue_id
+ 
+#     # Extract user_id from cms_id
+#     user_res = supabase.table("users").select("user_id").eq("cms_id", cms_id).execute()
+#     if not user_res.data:
+#         return jsonify({"error": "User not found"}), 404
+#     user_id = user_res.data[0]["user_id"]
+ 
+#     # Issue record find
+#     issue_res = supabase.table("issued_books").select("*").eq("issue_id", issue_id).eq("user_id", user_id).eq("status", "issued").execute()
+#     if not issue_res.data:
+#         return jsonify({"error": "No active issue found for this QR"}), 404
+ 
+#     issue = issue_res.data[0]
+#     book_id = issue["book_id"]
+ 
+#     # Check late return
+#     from datetime import date as date_type
+#     due_date = date_type.fromisoformat(issue["due_date"])
+#     return_date = datetime.now(timezone.utc)
+#     is_late = return_date.date() > due_date  # boolean True or False
+ 
+#     # Return record insert
+#     return_res = supabase.table("return_logs").insert({
+#         "issue_id": issue_id,
+#         "book_id": book_id,
+#         "user_id": user_id,
+#         "return_date": return_date.date().isoformat(),
+#         "late_return": True,
+#         "fine_id": None  # Fine will be linked later if late
+#     }).execute()
+ 
+#     return_id = return_res.data[0]["return_id"]
+#     fine_id = None
+#     fine_amount = 0
+ 
+#     # If late return then create fine
+#     if is_late:
+#         overdue_days = (return_date.date() - due_date).days
+#         fine_amount = overdue_days * 30  # 30 rupees per day
+ 
+#         fine_res = supabase.table("fine").insert({
+#             "user_id": user_id,
+#             "issue_id": issue_id,
+#             "return_id": return_id,
+#             "fine_amount": fine_amount,
+#             "fine_date": return_date.date().isoformat(),
+#             "is_paid": False,
+#             "paid_date": None
+#         }).execute()
+ 
+#         fine_id = fine_res.data[0]["fine_id"]
+ 
+#         # Link fine_id in return record
+#         supabase.table("return_logs").update({
+#             "fine_id": fine_id
+#         }).eq("return_id", return_id).execute()
+ 
+#     # Issued books status update
+#     supabase.table("issued_books").update({
+#         "status": "returned"
+#     }).eq("issue_id", issue_id).execute()
+ 
+#     # Book quantity update
+#     book_res = supabase.table("book").select("quantity").eq("book_id", book_id).execute()
+#     new_quantity = book_res.data[0]["quantity"] + 1
+#     supabase.table("book").update({
+#         "quantity": new_quantity,
+#         "status": "available"
+#     }).eq("book_id", book_id).execute()
+ 
+#     return jsonify({
+#         "message": "Book returned successfully",
+#         "return_date": return_date.date().isoformat(),
+#         "late_return": is_late,
+#         "fine_amount": fine_amount,
+#         "return_id": return_id
+#     }), 200
+
+
+# =========================
+# GET RETURNED BOOKS HISTORY (ADMIN) (JWT♥)
+# Admin only can see returned books
+# =========================
+@app.route("/api/admin/returned-books", methods=["GET"])
+@jwt_required()
+def get_returned_books():
+    identity = get_jwt_identity()
+    if not identity.startswith("admin:"):
+        return jsonify({"error": "Unauthorized"}), 403
+ 
+    # Get data from return_logs table with joins
+    res = supabase.table("return_logs").select("*, users(student_name, cms_id, email), book(title, author), fine!return_logs_fine_id_fkey(fine_amount, is_paid)").execute()
+ 
+    return jsonify({
+        "message": "Returned books fetched successfully",
+        "total": len(res.data),
+        "returned_books": res.data
+    }), 200
+ 
+
 
 if __name__ == "__main__":
     app.run(debug=True, port=8000)
