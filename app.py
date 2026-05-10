@@ -673,7 +673,7 @@ def admin_reset_password():
 @app.route("/api/get-books", methods=["GET"])
 @jwt_required()
 def get_all_books():
-    res = supabase.table("book").select("*, review(rating_star_number, rating_description, id, users(student_name, user_id, cms_id, email, profile_picture_url))").execute()
+    res = supabase.table("book").select("*, review(rating_star_number, rating_description, id, users(student_name, user_id, cms_id, email, profile_picture_url)), category(category_id)").execute()
  
     if not res.data:
         return jsonify({"message": "No books found", "books": []}), 200
@@ -1330,103 +1330,107 @@ def get_admin_issued_history():
     }), 200
 
 
-# # =========================
-# # RETURN BOOK VIA QR SCAN (USER) (JWT♥)
-# # In QR issue_id is applied on book cover , scanned QR will provide issue_id of the book
-# # Return record is created in return_logs table, and fine is created in fine table if book is late returned
-# # =========================
-# class ReturnBookRequest(BaseModel):
-#     issue_id: int
+# =========================
+# RETURN BOOK VIA QR SCAN (USER) (JWT♥)
+# In QR issue_id is applied on book cover , scanned QR will provide issue_id of the book
+# Return record is created in return_logs table, and fine is created in fine table if book is late returned
+# =========================
+class ReturnBookRequest(BaseModel):
+    book_id: int
  
-# @app.route("/api/return-book", methods=["POST"])
-# @jwt_required()
-# def return_book():
-#     cms_id = get_jwt_identity()
+@app.route("/api/return-book", methods=["POST"])
+@jwt_required()
+def return_book():
+    cms_id = get_jwt_identity()
  
-#     try:
-#         body = ReturnBookRequest(**request.json)
-#     except ValidationError:
-#         return jsonify({"error": "Invalid data format"}), 400
+    try:
+        body = ReturnBookRequest(**request.json)
+    except ValidationError:
+        return jsonify({"error": "Invalid data format"}), 400
  
-#     issue_id = body.issue_id
+    book_id = body.book_id
  
-#     # Extract user_id from cms_id
-#     user_res = supabase.table("users").select("user_id").eq("cms_id", cms_id).execute()
-#     if not user_res.data:
-#         return jsonify({"error": "User not found"}), 404
-#     user_id = user_res.data[0]["user_id"]
+    # cms_id se user_id nikalo
+    user_res = supabase.table("users").select("user_id").eq("cms_id", cms_id).execute()
+    if not user_res.data:
+        return jsonify({"error": "User not found"}), 404
+    user_id = user_res.data[0]["user_id"]
  
-#     # Issue record find
-#     issue_res = supabase.table("issued_books").select("*").eq("issue_id", issue_id).eq("user_id", user_id).eq("status", "issued").execute()
-#     if not issue_res.data:
-#         return jsonify({"error": "No active issue found for this QR"}), 404
+    # book_id aur user_id se active issue dhundo
+    issue_res = supabase.table("issued_books").select("*").eq("book_id", book_id).eq("user_id", user_id).eq("status", "issued").execute()
+    if not issue_res.data:
+        return jsonify({"error": "No active issue found for this book"}), 404
  
-#     issue = issue_res.data[0]
-#     book_id = issue["book_id"]
+    issue = issue_res.data[0]
+    issue_id = issue["issue_id"]  # issue_id ab issue se nikalega
  
-#     # Check late return
-#     from datetime import date as date_type
-#     due_date = date_type.fromisoformat(issue["due_date"])
-#     return_date = datetime.now(timezone.utc)
-#     is_late = return_date.date() > due_date  # boolean True or False
+    # Late return check karo
+    from datetime import date as date_type
+    due_date = date_type.fromisoformat(issue["due_date"])
+    return_date = datetime.now(timezone.utc)
+    is_late = return_date.date() > due_date  # boolean True ya False
  
-#     # Return record insert
-#     return_res = supabase.table("return_logs").insert({
-#         "issue_id": issue_id,
-#         "book_id": book_id,
-#         "user_id": user_id,
-#         "return_date": return_date.date().isoformat(),
-#         "late_return": True,
-#         "fine_id": None  # Fine will be linked later if late
-#     }).execute()
+    # Return record insert karo
+    return_res = supabase.table("return_logs").insert({
+        "issue_id": issue_id,
+        "book_id": book_id,
+        "user_id": user_id,
+        "return_date": return_date.date().isoformat(),
+        "late_return": is_late,
+        "fine_id": None
+    }).execute()
  
-#     return_id = return_res.data[0]["return_id"]
-#     fine_id = None
-#     fine_amount = 0
+    return_id = return_res.data[0]["return_id"]
+    fine_id = None
+    fine_amount = 0
  
-#     # If late return then create fine
-#     if is_late:
-#         overdue_days = (return_date.date() - due_date).days
-#         fine_amount = overdue_days * 30  # 30 rupees per day
+    # Agar late return hai toh fine create karo
+    if is_late:
+        overdue_days = (return_date.date() - due_date).days
+        fine_amount = overdue_days * 30  # 30 rupees per day
  
-#         fine_res = supabase.table("fine").insert({
-#             "user_id": user_id,
-#             "issue_id": issue_id,
-#             "return_id": return_id,
-#             "fine_amount": fine_amount,
-#             "fine_date": return_date.date().isoformat(),
-#             "is_paid": False,
-#             "paid_date": None
-#         }).execute()
+        fine_res = supabase.table("fine").insert({
+            "user_id": user_id,
+            "issue_id": issue_id,
+            "return_id": return_id,
+            "fine_amount": fine_amount,
+            "fine_date": return_date.date().isoformat(),
+            "is_paid": False,
+            "paid_date": None
+        }).execute()
  
-#         fine_id = fine_res.data[0]["fine_id"]
+        fine_id = fine_res.data[0]["fine_id"]
  
-#         # Link fine_id in return record
-#         supabase.table("return_logs").update({
-#             "fine_id": fine_id
-#         }).eq("return_id", return_id).execute()
+        # Return record mein fine_id link karo
+        supabase.table("return_logs").update({
+            "fine_id": fine_id
+        }).eq("return_id", return_id).execute()
  
-#     # Issued books status update
-#     supabase.table("issued_books").update({
-#         "status": "returned"
-#     }).eq("issue_id", issue_id).execute()
+    # Issued books status update karo
+    supabase.table("issued_books").update({
+        "status": "returned"
+    }).eq("issue_id", issue_id).execute()
  
-#     # Book quantity update
-#     book_res = supabase.table("book").select("quantity").eq("book_id", book_id).execute()
-#     new_quantity = book_res.data[0]["quantity"] + 1
-#     supabase.table("book").update({
-#         "quantity": new_quantity,
-#         "status": "available"
-#     }).eq("book_id", book_id).execute()
+    # Book ki quantity wapis barhaao
+    book_res = supabase.table("book").select("quantity").eq("book_id", book_id).execute()
+    new_quantity = book_res.data[0]["quantity"] + 1
+    supabase.table("book").update({
+        "quantity": new_quantity,
+        "status": "available"
+    }).eq("book_id", book_id).execute()
  
-#     return jsonify({
-#         "message": "Book returned successfully",
-#         "return_date": return_date.date().isoformat(),
-#         "late_return": is_late,
-#         "fine_amount": fine_amount,
-#         "return_id": return_id
-#     }), 200
-
+    return jsonify({
+        "message": "Book returned successfully",
+        "cms_id": cms_id,
+        "book_id": book_id,
+        "return_date": return_date.date().isoformat(),
+        "late_return": is_late,
+        "fine_amount": fine_amount,
+        "return_id": return_id,
+        "user_id": user_id,
+        "issue_id": issue_id
+    }), 200
+ 
 
 # =========================
 # GET RETURNED BOOKS HISTORY (ADMIN) (JWT♥)
