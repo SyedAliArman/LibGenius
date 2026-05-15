@@ -1452,7 +1452,124 @@ def get_returned_books():
         "returned_books": res.data
     }), 200
  
-
+# =========================
+# DROP BOOK (ADMIN & USER)
+# JWT LAGAYA
+# Admin: kisi bhi user ki book drop kar sakta hai (user_id + book_id)
+# User: apni khud ki book drop kar sakta hai (sirf book_id)
+# =========================
+class DropBookRequest(BaseModel):
+    book_id: int
+    user_id: str | None = None  # Admin bhejega, user nahi
+ 
+@app.route("/api/drop-book", methods=["POST"])
+@jwt_required()
+def drop_book():
+    identity = get_jwt_identity()
+    is_admin = identity.startswith("admin:")
+ 
+    try:
+        body = DropBookRequest(**request.json)
+    except ValidationError:
+        return jsonify({"error": "Invalid data format"}), 400
+ 
+    # Admin hai toh user_id body se lo, user hai toh token se nikalo
+    if is_admin:
+        if not body.user_id:
+            return jsonify({"error": "Admin ke liye user_id zaroori hai"}), 400
+        user_res = supabase.table("users").select("user_id", "student_name", "cms_id").eq("user_id", body.user_id).execute()
+        if not user_res.data:
+            return jsonify({"error": "User not found"}), 404
+        user = user_res.data[0]
+        user_id = user["user_id"]
+    else:
+        # User apni book drop karega — token se cms_id nikalo
+        cms_id = identity
+        user_res = supabase.table("users").select("user_id", "student_name", "cms_id").eq("cms_id", cms_id).execute()
+        if not user_res.data:
+            return jsonify({"error": "User not found"}), 404
+        user = user_res.data[0]
+        user_id = user["user_id"]
+ 
+    # Check karo book exist karti hai
+    book_res = supabase.table("book").select("*").eq("book_id", body.book_id).execute()
+    if not book_res.data:
+        return jsonify({"error": "Book not found"}), 404
+ 
+    # Active issue dhundo user_id aur book_id se
+    issue_res = supabase.table("issued_books").select("*").eq("user_id", user_id).eq("book_id", body.book_id).eq("status", "issued").execute()
+    if not issue_res.data:
+        return jsonify({"error": "No active issue found for this user and book"}), 404
+ 
+    issue = issue_res.data[0]
+    issue_id = issue["issue_id"]
+ 
+    # Late return check karo
+    from datetime import date as date_type
+    due_date = date_type.fromisoformat(issue["due_date"])
+    drop_date = datetime.now(timezone.utc)
+    is_late = drop_date.date() > due_date
+ 
+    # Return logs mein record insert karo
+    return_res = supabase.table("return_logs").insert({
+        "issue_id": issue_id,
+        "book_id": body.book_id,
+        "user_id": user_id,
+        "return_date": drop_date.date().isoformat(),
+        "late_return": is_late,
+        "fine_id": None
+    }).execute()
+ 
+    return_id = return_res.data[0]["return_id"]
+    fine_amount = 0
+    fine_id = None
+ 
+    # Agar late hai toh fine lagao
+    if is_late:
+        overdue_days = (drop_date.date() - due_date).days
+        fine_amount = overdue_days * 30  # 30 rupees per day
+ 
+        fine_res = supabase.table("fine").insert({
+            "user_id": user_id,
+            "issue_id": issue_id,
+            "return_id": return_id,
+            "fine_amount": fine_amount,
+            "fine_date": drop_date.date().isoformat(),
+            "is_paid": False,
+            "paid_date": None
+        }).execute()
+ 
+        fine_id = fine_res.data[0]["fine_id"]
+ 
+        # Return logs mein fine_id link karo
+        supabase.table("return_logs").update({
+            "fine_id": fine_id
+        }).eq("return_id", return_id).execute()
+ 
+    # Issued books status update karo
+    supabase.table("issued_books").update({
+        "status": "returned"
+    }).eq("issue_id", issue_id).execute()
+ 
+    # Book quantity wapis barhaao
+    book = book_res.data[0]
+    new_quantity = book["quantity"] + 1
+    supabase.table("book").update({
+        "quantity": new_quantity,
+        "status": "available"
+    }).eq("book_id", body.book_id).execute()
+ 
+    return jsonify({
+        "message": "Book dropped successfully",
+        "student_name": user["student_name"],
+        "cms_id": user["cms_id"],
+        "book_id": body.book_id,
+        "drop_date": drop_date.date().isoformat(),
+        "late_return": is_late,
+        "fine_amount": fine_amount,
+        "return_id": return_id,
+        "category_id": book["category_id"]
+    }), 200
 
 if __name__ == "__main__":
     app.run(debug=True, port=8000)
