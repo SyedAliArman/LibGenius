@@ -1301,7 +1301,7 @@ def get_my_issued_history():
     user_id = user_res.data[0]["user_id"]
  
     # Sari history - issued aur returned dono
-    res = supabase.table("issued_books").select("*, book(title, author, shelf_no, book_cover_page), return_logs(return_date, fine_id, fine!return_logs_fine_id_fkey(fine_amount, is_paid)").eq("user_id", user_id).execute()
+    res = supabase.table("issued_books").select("*, book(title, author, shelf_no, book_cover_page), return_logs(return_date, fine_id, fine!return_logs_fine_id_fkey(fine_amount, is_paid))").eq("user_id", user_id).execute()
  
     return jsonify({
         "message": "History fetched successfully",
