@@ -1031,7 +1031,7 @@ def get_book_reviews(book_id):
         return jsonify({"error": "Book not found"}), 404
  
     # Fetch Reviews
-    res = supabase.table("review").select("*").eq("book_id", book_id).execute()
+    res = supabase.table("review").select("*, users(student_name, profile_picture_url)").eq("book_id", book_id).execute()
  
     if not res.data:
         return jsonify({
@@ -1301,7 +1301,7 @@ def get_my_issued_history():
     user_id = user_res.data[0]["user_id"]
  
     # Sari history - issued aur returned dono
-    res = supabase.table("issued_books").select("*, book(title, author, shelf_no)").eq("user_id", user_id).execute()
+    res = supabase.table("issued_books").select("*, book(title, author, shelf_no, book_cover_page), return_logs(return_date, fine_id, fine!return_logs_fine_id_fkey(fine_amount, is_paid)").eq("user_id", user_id).execute()
  
     return jsonify({
         "message": "History fetched successfully",
