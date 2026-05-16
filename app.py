@@ -673,7 +673,7 @@ def admin_reset_password():
 @app.route("/api/get-books", methods=["GET"])
 @jwt_required()
 def get_all_books():
-    res = supabase.table("book").select("*, review(rating_star_number, rating_description, id, users(student_name, user_id, cms_id, email, profile_picture_url)), category(category_id)").execute()
+    res = supabase.table("book").select("*, review(rating_star_number, rating_description, id, users(student_name, user_id, cms_id, email, profile_picture_url)), category(category_name)").execute()
  
     if not res.data:
         return jsonify({"message": "No books found", "books": []}), 200
@@ -1453,14 +1453,13 @@ def get_returned_books():
     }), 200
  
 # =========================
-# DROP BOOK (ADMIN & USER)
-# JWT LAGAYA
-# Admin: kisi bhi user ki book drop kar sakta hai (user_id + book_id)
-# User: apni khud ki book drop kar sakta hai (sirf book_id)
+# DROP BOOK (ADMIN & USER) (JWT♥)
+# Admin: drop book of any user (book_id + user_id)
+# User: drop own book (book_id)
 # =========================
 class DropBookRequest(BaseModel):
     book_id: int
-    user_id: str | None = None  # Admin bhejega, user nahi
+    user_id: str | None = None
  
 @app.route("/api/drop-book", methods=["POST"])
 @jwt_required()
@@ -1473,7 +1472,7 @@ def drop_book():
     except ValidationError:
         return jsonify({"error": "Invalid data format"}), 400
  
-    # Admin hai toh user_id body se lo, user hai toh token se nikalo
+    # Admin has to send user_id, user has to send book_id
     if is_admin:
         if not body.user_id:
             return jsonify({"error": "Admin ke liye user_id zaroori hai"}), 400
@@ -1483,7 +1482,7 @@ def drop_book():
         user = user_res.data[0]
         user_id = user["user_id"]
     else:
-        # User apni book drop karega — token se cms_id nikalo
+        # User drop own book using cms_id from token
         cms_id = identity
         user_res = supabase.table("users").select("user_id", "student_name", "cms_id").eq("cms_id", cms_id).execute()
         if not user_res.data:
@@ -1491,12 +1490,12 @@ def drop_book():
         user = user_res.data[0]
         user_id = user["user_id"]
  
-    # Check karo book exist karti hai
+    # Check book exists
     book_res = supabase.table("book").select("*").eq("book_id", body.book_id).execute()
     if not book_res.data:
         return jsonify({"error": "Book not found"}), 404
  
-    # Active issue dhundo user_id aur book_id se
+    # Active issue
     issue_res = supabase.table("issued_books").select("*").eq("user_id", user_id).eq("book_id", body.book_id).eq("status", "issued").execute()
     if not issue_res.data:
         return jsonify({"error": "No active issue found for this user and book"}), 404
@@ -1504,13 +1503,13 @@ def drop_book():
     issue = issue_res.data[0]
     issue_id = issue["issue_id"]
  
-    # Late return check karo
+    # Late return check
     from datetime import date as date_type
     due_date = date_type.fromisoformat(issue["due_date"])
     drop_date = datetime.now(timezone.utc)
     is_late = drop_date.date() > due_date
  
-    # Return logs mein record insert karo
+    # Insert record in return_logs
     return_res = supabase.table("return_logs").insert({
         "issue_id": issue_id,
         "book_id": body.book_id,
@@ -1524,7 +1523,7 @@ def drop_book():
     fine_amount = 0
     fine_id = None
  
-    # Agar late hai toh fine lagao
+    # If late then create fine
     if is_late:
         overdue_days = (drop_date.date() - due_date).days
         fine_amount = overdue_days * 30  # 30 rupees per day
@@ -1541,17 +1540,17 @@ def drop_book():
  
         fine_id = fine_res.data[0]["fine_id"]
  
-        # Return logs mein fine_id link karo
+        # Link fine_id in return_logs
         supabase.table("return_logs").update({
             "fine_id": fine_id
         }).eq("return_id", return_id).execute()
  
-    # Issued books status update karo
+    # Issued books status update
     supabase.table("issued_books").update({
         "status": "returned"
     }).eq("issue_id", issue_id).execute()
  
-    # Book quantity wapis barhaao
+    # Book quantity increase
     book = book_res.data[0]
     new_quantity = book["quantity"] + 1
     supabase.table("book").update({
