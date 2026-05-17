@@ -455,7 +455,7 @@ def edit_profile():
         updated_res = supabase.table("users").select("*").eq("cms_id", cms_id).execute()
         return jsonify({
             "message": "Profile updated successfully!",
-            "student": updated_res.data[0]
+            "student_data": updated_res.data[0]
         }), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -1321,7 +1321,7 @@ def get_admin_issued_history():
     if not identity.startswith("admin:"):
         return jsonify({"error": "Unauthorized"}), 403
  
-    res = supabase.table("issued_books").select("*, users(student_name, cms_id, email), book(title, author)").execute()
+    res = supabase.table("issued_books").select("*, users(student_name, cms_id, email), book(title, author, shelf_no, book_cover_page), return_logs(return_date, fine_id, fine!return_logs_fine_id_fkey(fine_amount, is_paid))").execute()
  
     return jsonify({
         "message": "Full history fetched successfully",
