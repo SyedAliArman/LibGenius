@@ -1311,14 +1311,32 @@ def get_my_issued_history():
     user_id = user_res.data[0]["user_id"]
  
     # Sari history - issued aur returned dono
-    res = supabase.table("issued_books").select("*, book(title, author, shelf_no, book_cover_page), return_logs(return_date, fine_id, fine!return_logs_fine_id_fkey(fine_amount, is_paid))").eq("user_id", user_id).execute()
+    # book cover, return_date, fine_amount bhi saath
+    res = supabase.table("issued_books").select(
+        "*, book(title, author, shelf_no, book_cover_page), return_logs(return_date, fine!return_logs_fine_id_fkey(fine_amount, is_paid, fine_id))"
+    ).eq("user_id", user_id).execute()
+ 
+    # return_logs list se nikal ke single object banao
+    history = []
+    for item in res.data:
+        return_logs = item.get("return_logs", [])
+        return_info = return_logs[0] if return_logs else None
+ 
+        # return_date issue_date aur due_date ke paas lao
+        item["return_date"] = return_info["return_date"] if return_info else None
+ 
+        # fine info alag rakho
+        item["fine"] = return_info.get("fine") if return_info else None
+ 
+        del item["return_logs"]
+        history.append(item)
  
     return jsonify({
         "message": "History fetched successfully",
-        "total": len(res.data),
-        "history": res.data
+        "total": len(history),
+        "history": history
     }), 200
-
+ 
 
 # =========================
 # GET ISSUED BOOKS HISTORY (ADMIN) (JWT♥)
@@ -1331,12 +1349,27 @@ def get_admin_issued_history():
     if not identity.startswith("admin:"):
         return jsonify({"error": "Unauthorized"}), 403
  
-    res = supabase.table("issued_books").select("*, users(student_name, cms_id, email), book(title, author, shelf_no, book_cover_page), return_logs(return_date, fine_id, fine!return_logs_fine_id_fkey(fine_amount, is_paid))").execute()
+    res = supabase.table("issued_books").select("*, users(student_name, cms_id, email), book(title, author, shelf_no, book_cover_page), return_logs(return_date, fine!return_logs_fine_id_fkey(fine_amount, is_paid, fine_id))").execute()
  
+    history = []
+    for item in res.data:
+        return_logs = item.get("return_logs", [])
+        return_info = return_logs[0] if return_logs else None
+ 
+        # return_date issue_date aur due_date ke paas lao
+        item["return_date"] = return_info["return_date"] if return_info else None
+ 
+        # fine info alag rakho
+        item["fine"] = return_info.get("fine") if return_info else None
+ 
+        del item["return_logs"]
+        history.append(item)
+
+
     return jsonify({
         "message": "Full history fetched successfully",
-        "total": len(res.data),
-        "history": res.data
+        "total": len(history),
+        "history": history
     }), 200
 
 
