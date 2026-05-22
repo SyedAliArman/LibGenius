@@ -1162,7 +1162,7 @@ def get_my_issued_books():
     user_id = user_res.data[0]["user_id"]
  
     # Sirf currently issued books
-    res = supabase.table("issued_books").select("*, book(title, author, shelf_no)").eq("user_id", user_id).eq("status", "issued").execute()
+    res = supabase.table("issued_books").select("*, book(title, author, shelf_no, book_cover_page), fine(fine_amount,is_paid, fine_id)").eq("user_id", user_id).eq("status", "issued").execute()
  
     return jsonify({
         "message": "Issued books fetched successfully",
@@ -1182,7 +1182,7 @@ def get_all_issued_books():
     if not identity.startswith("admin:"):
         return jsonify({"error": "Unauthorized"}), 403
  
-    res = supabase.table("issued_books").select("*, users(student_name, cms_id, email, campus, department, faculty, phone_no, date_of_birth, is_blocked, semester, user_id), book(title, author, shelf_no)").eq("status", "issued").execute()
+    res = supabase.table("issued_books").select("*, users(student_name, cms_id, email, campus, department, faculty, phone_no, date_of_birth, is_blocked, semester, user_id), book(title, author, shelf_no, book_cover_page), fine(fine_amount,is_paid, fine_id)").eq("status", "issued").execute()
  
     return jsonify({
         "message": "All issued books fetched successfully",
