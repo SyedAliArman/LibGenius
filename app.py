@@ -428,18 +428,29 @@ def edit_profile():
     # Profile picture aayi hai toh upload karo
     if 'profile_picture' in request.files:
         file = request.files['profile_picture']
+        print(f"DEBUG: File received: {file.filename}")
         if file.filename != '':
             allowed_extensions = {'png', 'jpg', 'jpeg'}
             file_ext = file.filename.rsplit('.', 1)[-1].lower()
+            print(f"DEBUG: File extension: {file_ext}")
             if file_ext not in allowed_extensions:
                 return jsonify({"error": "Only png, jpg, jpeg files allowed"}), 400
             try:
-                file_name = f"{cms_id}.{file_ext}"
                 file_data = file.read()
+                # Har user ki ek hi fixed file hogi - extension nahi, sirf cms_id
+                # Sari possible extensions delete karo pehle
+                for ext in ['jpg', 'jpeg', 'png']:
+                    try:
+                        supabase.storage.from_("Profile-Pictures").remove([f"{cms_id}.{ext}"])
+                    except:
+                        pass
+                # Naya naam cms_id + extension
+                file_name = f"{cms_id}.{file_ext}"
+                # Fresh upload karo
                 supabase.storage.from_("Profile-Pictures").upload(
                     path=file_name,
                     file=file_data,
-                    file_options={"content-type": file.content_type, "upsert": "true"}
+                    file_options={"content-type": file.content_type}
                 )
                 image_url = supabase.storage.from_("Profile-Pictures").get_public_url(file_name)
                 update_data["profile_picture_url"] = image_url
@@ -455,11 +466,10 @@ def edit_profile():
         updated_res = supabase.table("users").select("*").eq("cms_id", cms_id).execute()
         return jsonify({
             "message": "Profile updated successfully!",
-            "student_data": updated_res.data[0]
+            "student": updated_res.data[0]
         }), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
 
 # ===============================================================
 # ADMIN AUTH SYSTEM
