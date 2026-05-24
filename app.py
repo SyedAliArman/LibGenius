@@ -1149,7 +1149,7 @@ def issue_book():
 # GET CURRENTLY ISSUED BOOKS BY USER (USER) (JWT♥)
 # Only logged in user sees own issued books
 # =========================
-@app.route("/api/issued-books", methods=["GET"])
+@app.route("/api/my-issued-books", methods=["GET"])
 @jwt_required()
 def get_my_issued_books():
     cms_id = get_jwt_identity()
@@ -1162,14 +1162,25 @@ def get_my_issued_books():
     user_id = user_res.data[0]["user_id"]
  
     # Sirf currently issued books
-    res = supabase.table("issued_books").select("*, book(title, author, shelf_no, book_cover_page), fine(fine_amount,is_paid, fine_id)").eq("user_id", user_id).eq("status", "issued").execute()
+    res = supabase.table("issued_books").select("*, book(title, author, shelf_no, book_cover_page), fine(fine_amount, is_paid, fine_id)").eq("user_id", user_id).eq("status", "issued").execute()
+ 
+    # Agar fine nahi lagi toh 0 bhejo
+    issued_books = []
+    for item in res.data:
+        fines = item.get("fine", [])
+        item["fine"] = fines[0] if fines else {
+            "fine_id": None,
+            "fine_amount": 0,
+            "is_paid": False
+        }
+        issued_books.append(item)
  
     return jsonify({
         "message": "Issued books fetched successfully",
-        "total": len(res.data),
-        "issued_books": res.data
+        "total": len(issued_books),
+        "issued_books": issued_books
     }), 200
-
+ 
 
 # =========================
 # GET ALL ISSUED BOOKS WITH STUDENT DETAILS (ADMIN) (JWT♥)
@@ -1183,11 +1194,22 @@ def get_all_issued_books():
         return jsonify({"error": "Unauthorized"}), 403
  
     res = supabase.table("issued_books").select("*, users(student_name, cms_id, email, campus, department, faculty, phone_no, date_of_birth, is_blocked, semester, user_id), book(title, author, shelf_no, book_cover_page), fine(fine_amount,is_paid, fine_id)").eq("status", "issued").execute()
- 
+
+    # Agar fine nahi lagi toh 0 bhejo
+    issued_books = []
+    for item in res.data:
+        fines = item.get("fine", [])
+        item["fine"] = fines[0] if fines else {
+            "fine_id": None,
+            "fine_amount": 0,
+            "is_paid": False
+        }
+        issued_books.append(item)
+
     return jsonify({
         "message": "All issued books fetched successfully",
-        "total": len(res.data),
-        "issued_books": res.data
+        "total": len(issued_books),
+        "issued_books": issued_books
     }), 200
 
 
@@ -1313,7 +1335,7 @@ def get_my_issued_history():
     # Sari history - issued aur returned dono
     # book cover, return_date, fine_amount bhi saath
     res = supabase.table("issued_books").select(
-        "*, book(title, author, shelf_no, book_cover_page), return_logs(return_date, fine!return_logs_fine_id_fkey(fine_amount, is_paid, fine_id))"
+        "*, book(title, author, shelf_no, cover_image_url), return_logs(return_date, fine_id, fine!return_logs_fine_id_fkey(fine_amount, is_paid))"
     ).eq("user_id", user_id).execute()
  
     # return_logs list se nikal ke single object banao
@@ -1325,8 +1347,13 @@ def get_my_issued_history():
         # return_date issue_date aur due_date ke paas lao
         item["return_date"] = return_info["return_date"] if return_info else None
  
-        # fine info alag rakho
-        item["fine"] = return_info.get("fine") if return_info else None
+        # fine info alag rakho - agar fine nahi lagi toh 0 bhejo
+        fine_data = return_info.get("fine") if return_info else None
+        item["fine"] = fine_data if fine_data else {
+            "fine_id": None,
+            "fine_amount": 0,
+            "is_paid": False
+        }
  
         del item["return_logs"]
         history.append(item)
@@ -1359,8 +1386,13 @@ def get_admin_issued_history():
         # return_date issue_date aur due_date ke paas lao
         item["return_date"] = return_info["return_date"] if return_info else None
  
-        # fine info alag rakho
-        item["fine"] = return_info.get("fine") if return_info else None
+        # fine info alag rakho - agar fine nahi lagi toh 0 bhejo
+        fine_data = return_info.get("fine") if return_info else None
+        item["fine"] = fine_data if fine_data else {
+            "fine_id": None,
+            "fine_amount": 0,
+            "is_paid": False
+        }
  
         del item["return_logs"]
         history.append(item)
