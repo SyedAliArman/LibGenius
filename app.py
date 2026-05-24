@@ -466,7 +466,7 @@ def edit_profile():
         updated_res = supabase.table("users").select("*").eq("cms_id", cms_id).execute()
         return jsonify({
             "message": "Profile updated successfully!",
-            "student": updated_res.data[0]
+            "student_data": updated_res.data[0]
         }), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
