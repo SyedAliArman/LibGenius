@@ -1335,7 +1335,7 @@ def get_my_issued_history():
     # Sari history - issued aur returned dono
     # book cover, return_date, fine_amount bhi saath
     res = supabase.table("issued_books").select(
-        "*, book(title, author, shelf_no, cover_image_url), return_logs(return_date, fine_id, fine!return_logs_fine_id_fkey(fine_amount, is_paid))"
+        "*, book(title, author, shelf_no, book_cover_page), return_logs(return_date, fine_id, fine!return_logs_fine_id_fkey(fine_amount, is_paid))"
     ).eq("user_id", user_id).execute()
  
     # return_logs list se nikal ke single object banao
