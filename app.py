@@ -7,6 +7,7 @@ from pydantic import BaseModel, EmailStr, ValidationError
 import threading
 from datetime import datetime, timedelta, timezone
 from flask_cors import CORS
+from apscheduler.schedulers.background import BackgroundScheduler
 
 # JWT IMPORT
 from flask_jwt_extended import (
@@ -1719,6 +1720,74 @@ def unblock_user():
         "user_id": body.user_id,
         "is_blocked": False
     }), 200
+ 
+
+# ==================================================================================================
+# BACKGROUND SCHEDULER - AUTO FINE EVERY DAY AT MIDNIGHT
+# ==================================================================================================
+def calculate_daily_fines():
+    with app.app_context():
+        try:
+            from datetime import date as date_type
+            today = datetime.now(timezone.utc).date()
+ 
+            print(f"[SCHEDULER] Running daily fine check: {today}")
+ 
+            # Sari issued books dhundo jinka due date guzar gaya
+            issued_res = supabase.table("issued_books").select("*").eq("status", "issued").execute()
+ 
+            if not issued_res.data:
+                print("[SCHEDULER] No issued books found")
+                return
+ 
+            for issue in issued_res.data:
+                due_date = date_type.fromisoformat(issue["due_date"])
+ 
+                # Due date guzar gayi hai?
+                if today > due_date:
+                    overdue_days = (today - due_date).days
+                    fine_amount = overdue_days * 30  # 30 rupees per day
+ 
+                    # Check karo is issue pe pehle se fine hai ya nahi
+                    existing_fine = supabase.table("fine").select("fine_id", "fine_amount").eq("issue_id", issue["issue_id"]).eq("is_paid", False).execute()
+ 
+                    if existing_fine.data:
+                        # Fine already hai — amount update karo
+                        supabase.table("fine").update({
+                            "fine_amount": fine_amount,
+                            "fine_date": today.isoformat()
+                        }).eq("issue_id", issue["issue_id"]).eq("is_paid", False).execute()
+                        print(f"[SCHEDULER] Fine updated for issue_id: {issue['issue_id']} — Amount: {fine_amount}")
+                    else:
+                        # Nayi fine insert karo
+                        supabase.table("fine").insert({
+                            "user_id": issue["user_id"],
+                            "issue_id": issue["issue_id"],
+                            "return_id": None,
+                            "fine_amount": fine_amount,
+                            "fine_date": today.isoformat(),
+                            "is_paid": False,
+                            "paid_date": None
+                        }).execute()
+                        print(f"[SCHEDULER] New fine added for issue_id: {issue['issue_id']} — Amount: {fine_amount}")
+ 
+            print("[SCHEDULER] Daily fine check complete!")
+ 
+        except Exception as e:
+            print(f"[SCHEDULER] Error: {str(e)}")
+ 
+ 
+# Scheduler start karo
+scheduler = BackgroundScheduler()
+scheduler.add_job(
+    func=calculate_daily_fines,
+    trigger="cron",
+    hour=0,        # Har raat 12 baje chalega
+    minute=0,
+    id="daily_fine_job"
+)
+scheduler.start()
+print("[SCHEDULER] Daily fine scheduler started!")
  
 
 if __name__ == "__main__":
