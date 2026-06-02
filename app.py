@@ -1786,6 +1786,97 @@ scheduler.add_job(
 )
 scheduler.start()
 print("[SCHEDULER] Daily fine scheduler started!")
+
+
+# =========================
+# UPDATE FINE (ADMIN) (JWT♥)
+# Admin can update, increase or cancel fine
+# =========================
+class UpdateFineRequest(BaseModel):
+    fine_id: str
+    action: str          # "update", "increase", "cancel"
+    amount: float | None = None  # for update or increase
+ 
+@app.route("/api/admin/update-fine", methods=["POST"])
+@jwt_required()
+def update_fine():
+    identity = get_jwt_identity()
+    if not identity.startswith("admin:"):
+        return jsonify({"error": "Unauthorized"}), 403
+ 
+    try:
+        body = UpdateFineRequest(**request.json)
+    except ValidationError:
+        return jsonify({"error": "Invalid data format"}), 400
+ 
+    # Check actions
+    if body.action not in ["update", "increase", "cancel"]:
+        return jsonify({"error": "Action must be: update, increase, or cancel"}), 400
+ 
+    # Check fine exist
+    fine_res = supabase.table("fine").select("*").eq("fine_id", body.fine_id).execute()
+    if not fine_res.data:
+        return jsonify({"error": "Fine not found"}), 404
+ 
+    fine = fine_res.data[0]
+ 
+    # Already paid can't update
+    if fine["is_paid"]:
+        return jsonify({"error": "Cannot update an already paid fine"}), 400
+ 
+    # Update amount with action 
+    if body.action == "cancel":
+        # Fine cancel and amount will be 0
+        supabase.table("fine").update({
+            "fine_amount": 0,
+            "is_paid": True,
+            "paid_date": datetime.now(timezone.utc).date().isoformat()
+        }).eq("fine_id", body.fine_id).execute()
+ 
+        return jsonify({
+            "message": "Fine cancelled successfully",
+            "fine_id": body.fine_id,
+            "fine_amount": 0,
+            "action": "cancelled"
+        }), 200
+ 
+    elif body.action == "update":
+        # Amount required
+        if body.amount is None or body.amount < 0:
+            return jsonify({"error": "Valid amount required for update"}), 400
+ 
+        supabase.table("fine").update({
+            "fine_amount": body.amount,
+            "fine_date": datetime.now(timezone.utc).date().isoformat()
+        }).eq("fine_id", body.fine_id).execute()
+ 
+        return jsonify({
+            "message": "Fine updated successfully",
+            "fine_id": body.fine_id,
+            "fine_amount": body.amount,
+            "action": "updated"
+        }), 200
+ 
+    elif body.action == "increase":
+        # Amount required
+        if body.amount is None or body.amount <= 0:
+            return jsonify({"error": "Valid amount required for increase"}), 400
+ 
+        new_amount = fine["fine_amount"] + body.amount
+ 
+        supabase.table("fine").update({
+            "fine_amount": new_amount,
+            "fine_date": datetime.now(timezone.utc).date().isoformat()
+        }).eq("fine_id", body.fine_id).execute()
+ 
+        return jsonify({
+            "message": "Fine increased successfully",
+            "fine_id": body.fine_id,
+            "previous_amount": fine["fine_amount"],
+            "increased_by": body.amount,
+            "new_fine_amount": new_amount,
+            "action": "increased"
+        }), 200
  
 
 if __name__ == "__main__":
