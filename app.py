@@ -1645,5 +1645,81 @@ def drop_book():
         "category_id": book["category_id"]
     }), 200
 
+
+
+# =========================
+# BLOCK / UNBLOCK USER (ADMIN) (JWT♥)
+# =========================
+class BlockUnblockRequest(BaseModel):
+    user_id: str
+ 
+# ------------------------------------
+# BLOCK USER
+# ------------------------------------
+@app.route("/api/admin/block-user", methods=["POST"])
+@jwt_required()
+def block_user():
+    identity = get_jwt_identity()
+    if not identity.startswith("admin:"):
+        return jsonify({"error": "Unauthorized"}), 403
+ 
+    try:
+        body = BlockUnblockRequest(**request.json)
+    except ValidationError:
+        return jsonify({"error": "Invalid data format"}), 400
+ 
+    # Check karo user exist karta hai
+    user_res = supabase.table("users").select("user_id", "student_name", "is_blocked").eq("user_id", body.user_id).execute()
+    if not user_res.data:
+        return jsonify({"error": "User not found"}), 404
+ 
+    user = user_res.data[0]
+ 
+    if user["is_blocked"]:
+        return jsonify({"error": "User is already blocked"}), 400
+ 
+    supabase.table("users").update({"is_blocked": True}).eq("user_id", body.user_id).execute()
+ 
+    return jsonify({
+        "message": f"{user['student_name']} has been blocked successfully",
+        "user_id": body.user_id,
+        "is_blocked": True
+    }), 200
+ 
+
+# ------------------------------------
+# UNBLOCK USER
+# ------------------------------------
+@app.route("/api/admin/unblock-user", methods=["POST"])
+@jwt_required()
+def unblock_user():
+    identity = get_jwt_identity()
+    if not identity.startswith("admin:"):
+        return jsonify({"error": "Unauthorized"}), 403
+ 
+    try:
+        body = BlockUnblockRequest(**request.json)
+    except ValidationError:
+        return jsonify({"error": "Invalid data format"}), 400
+ 
+    # Check karo user exist karta hai
+    user_res = supabase.table("users").select("user_id", "student_name", "is_blocked").eq("user_id", body.user_id).execute()
+    if not user_res.data:
+        return jsonify({"error": "User not found"}), 404
+ 
+    user = user_res.data[0]
+ 
+    if not user["is_blocked"]:
+        return jsonify({"error": "User is already unblocked"}), 400
+ 
+    supabase.table("users").update({"is_blocked": False}).eq("user_id", body.user_id).execute()
+ 
+    return jsonify({
+        "message": f"{user['student_name']} has been unblocked successfully",
+        "user_id": body.user_id,
+        "is_blocked": False
+    }), 200
+ 
+
 if __name__ == "__main__":
     app.run(debug=True, port=8000)
