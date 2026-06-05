@@ -7,3 +7,4 @@ supabase
 python-dotenv
 gunicorn
 flask-cors
+apscheduler
