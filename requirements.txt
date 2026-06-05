@@ -8,3 +8,6 @@ python-dotenv
 gunicorn
 flask-cors
 apscheduler
+sentence-transformers
+pandas
+huggingface-hub
