@@ -9,7 +9,8 @@ from datetime import datetime, timedelta, timezone
 from flask_cors import CORS
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import date
-
+from sentence_transformers import SentenceTransformer
+from huggingface_hub import login
 
 # JWT IMPORT
 from flask_jwt_extended import (
@@ -20,7 +21,25 @@ from flask_jwt_extended import (
 )
 
 
+# Model ek baar load hoga server start pe
+embedding_model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
+ 
+def generate_embedding(text):
+    try:
+        return embedding_model.encode(text).tolist()
+    except Exception as e:
+        print(f"Embedding error: {str(e)}")
+        return None
+
+
 load_dotenv()
+
+
+# HuggingFace warning hatao
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+from huggingface_hub import login
+if os.getenv("HF_TOKEN"):
+    login(token=os.getenv("HF_TOKEN"), add_to_git_credential=False)
 
 app = Flask(__name__)
 
@@ -872,7 +891,6 @@ def get_book_by_id(book_id):
 # =========================
 # ADD BOOK  BY ADMIN  (JWT♥)                                                                                                             17
 # =========================
-
 @app.route("/api/admin/add-book", methods=["POST"])
 @jwt_required()
 def add_book():
@@ -930,6 +948,13 @@ def add_book():
                 book_cover_page = supabase.storage.from_("book-covers").get_public_url(cover_name)
             except Exception as e:
                 return jsonify({"error": f"Cover image upload failed: {str(e)}"}), 500
+
+    # Embedding banao automatically
+    try:
+        embed_text = f"Title: {request.form.get('title', '')} Author: {request.form.get('author', '')} Description: {request.form.get('description', '')}"
+        embedding = generate_embedding(embed_text)
+    except:
+        embedding = None
  
     # Book insert karo
     res = supabase.table("book").insert({
@@ -945,7 +970,8 @@ def add_book():
         "language": request.form.get("language"),
         "book_pdf_url": book_pdf_url,
         "book_cover_page": book_cover_page,
-        "status": request.form.get("status", "Available")
+        "status": request.form.get("status", "Available"),
+        "embedding": embedding
     }).execute()
  
     if not res.data:
