@@ -12,3 +12,4 @@ sentence-transformers
 huggingface-hub
 groq
 PyPDF2
+requests
