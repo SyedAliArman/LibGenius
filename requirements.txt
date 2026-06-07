@@ -9,5 +9,6 @@ gunicorn
 flask-cors
 apscheduler
 sentence-transformers
-pandas
 huggingface-hub
+groq
+PyPDF2
