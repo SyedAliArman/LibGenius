@@ -12,6 +12,10 @@ from datetime import date
 from sentence_transformers import SentenceTransformer
 from huggingface_hub import login
 from groq import Groq
+import PyPDF2
+import requests
+import io
+import traceback
 
 # JWT IMPORT
 from flask_jwt_extended import (
@@ -59,19 +63,19 @@ CORS(app, resources={
 # ==================================================================================================
 def calculate_daily_fines():
     """
-    Roz overdue books check karega.
-    Due date cross hone par fine create/update karega.
+    Checks overdue books daily.
+    Creates/updates fines when due date crosses.
     """
 
     with app.app_context():
         try:
-            # Aaj ki date
+            # Today's date
             today = date.today()
 
             print(f"\n[SCHEDULER] Running Daily Fine Check")
             print(f"[SCHEDULER] Today's Date: {today}")
 
-            # Sirf issued books uthao
+            # Only issued books
             issued_res = (
                 supabase.table("issued_books")
                 .select("*")
@@ -85,7 +89,7 @@ def calculate_daily_fines():
 
             print(f"[SCHEDULER] Found {len(issued_res.data)} issued books")
 
-            # Har issued book check karo
+            # Check every issued book
             for issue in issued_res.data:
 
                 issue_id = issue["issue_id"]
@@ -93,12 +97,12 @@ def calculate_daily_fines():
 
                 print(f"\nChecking Issue ID: {issue_id}")
 
-                # Due date ko date object mein convert karo
+                # Convert due date to date object
                 due_date = date.fromisoformat(issue["due_date"])
 
                 print(f"Due Date: {due_date}")
 
-                # Agar due date cross ho gayi hai
+                # If due date is crossed
                 if today > due_date:
 
                     # Overdue days calculate karo
@@ -111,7 +115,7 @@ def calculate_daily_fines():
                         f"OVERDUE: {overdue_days} days | Fine: Rs.{fine_amount}"
                     )
 
-                    # Check karo unpaid fine pehle se mojood hai?
+                    # Check if unpaid fine already exists
                     existing_fine = (
                         supabase.table("fine")
                         .select("*")
@@ -120,7 +124,7 @@ def calculate_daily_fines():
                         .execute()
                     )
 
-                    # Agar fine mojood hai to update karo
+                    # If fine already exists, update it
                     if existing_fine.data:
 
                         print(
@@ -977,6 +981,15 @@ def add_book():
  
     if not res.data:
         return jsonify({"error": "Failed to add book"}), 500
+
+    book_data = res.data[0]
+
+    # PDF chunks background mein process karo
+    if book_pdf_url:
+        threading.Thread(
+            target=process_book_pdf,
+            args=(book_data["book_id"], book_pdf_url)
+        ).start()
  
     return jsonify({
         "message": "Book added successfully",
@@ -1956,6 +1969,194 @@ def update_fine():
         "message": "Fine updated successfully",
         "fine": update_res.data[0]
     }), 200 
+
+
+ # ==================================================================================================
+# PDF CHUNKING HELPER FUNCTIONS
+# ==================================================================================================
+
+def extract_text_from_pdf_url(pdf_url):
+    """Extract text from PDF URL"""
+    try:
+        response = requests.get(pdf_url, timeout=30)
+        pdf_file = io.BytesIO(response.content)
+        reader = PyPDF2.PdfReader(pdf_file)
+        text = ""
+        for page in reader.pages:
+            text += page.extract_text() or ""
+        return text
+    except Exception as e:
+        print(f"PDF extract error: {str(e)}")
+        return None
+
+def split_into_chunks(text, chunk_size=500):
+    """Split text into chunks"""
+    words = text.split()
+    chunks = []
+    for i in range(0, len(words), chunk_size):
+        chunk = " ".join(words[i:i + chunk_size])
+        if chunk.strip():
+            chunks.append(chunk)
+    return chunks
+
+def process_book_pdf(book_id, pdf_url):
+    """Process book PDF in background"""
+    try:
+        text = extract_text_from_pdf_url(pdf_url)
+        if not text:
+            print(f"PDF text not found for book_id: {book_id}")
+            return False
+
+        chunks = split_into_chunks(text, chunk_size=500)
+        print(f"Total chunks: {len(chunks)} for book_id: {book_id}")
+
+        # Purane chunks delete karo
+        supabase.table("book_chunks").delete().eq("book_id", book_id).execute()
+
+        # Har chunk ki embedding banao aur save karo
+        for index, chunk in enumerate(chunks):
+            embedding = generate_embedding(chunk)
+            if embedding:
+                supabase.table("book_chunks").insert({
+                    "book_id": book_id,
+                    "chunk_text": chunk,
+                    "chunk_index": index,
+                    "embedding": embedding
+                }).execute()
+            print(f"Chunk {index + 1}/{len(chunks)} saved")
+
+        print(f"PDF processing complete for book_id: {book_id}")
+        return True
+
+    except Exception as e:
+        print(f"PDF processing error: {str(e)}")
+        return False
+
+
+# ==================================================================================================
+# CHATBOT API (JWT)
+# Flow: Question → Embedding → Supabase search → Groq LLM → Answer
+# ==================================================================================================
+
+class ChatbotRequest(BaseModel):
+    question: str
+
+@app.route("/api/chatbot", methods=["POST"])
+@jwt_required()
+def chatbot():
+    try:
+        body = ChatbotRequest(**request.json)
+    except ValidationError:
+        return jsonify({"error": "Invalid data format"}), 400
+
+    question = body.question.strip()
+    if not question:
+        return jsonify({"error": "Question is empty"}), 400
+
+    # Step 1: Question ki embedding banao
+    question_embedding = generate_embedding(question)
+    if not question_embedding:
+        return jsonify({"error": "Embedding is not generated"}), 500
+
+    # Step 2: Books search karo
+    try:
+        similar_books = supabase.rpc("match_books", {
+            "query_embedding": question_embedding,
+            "match_count": 5
+        }).execute()
+    except Exception as e:
+        return jsonify({"error": f"Books search failed: {str(e)}"}), 500
+
+    # Step 3: PDF Chunks mein bhi search karo
+    try:
+        similar_chunks = supabase.rpc("match_chunks", {
+            "query_embedding": question_embedding,
+            "match_count": 5
+        }).execute()
+    except:
+        similar_chunks = None
+
+    # Step 4: Context banao
+    books_context = ""
+    chunks_context = ""
+    books_found = []
+
+    if similar_books.data:
+        for book in similar_books.data:
+            if book.get("similarity", 0) > 0.3:
+                books_context += f"""
+Book: {book.get('title', '')}
+Author: {book.get('author', '')}
+Description: {book.get('description', 'No description available')}
+---"""
+                books_found.append({
+                    "title": book.get("title"),
+                    "author": book.get("author"),
+                    "similarity": round(book.get("similarity", 0), 2)
+                })
+
+    if similar_chunks and similar_chunks.data:
+        for chunk in similar_chunks.data:
+            if chunk.get("similarity", 0) > 0.3:
+                chunks_context += f"""
+PDF Content:
+{chunk.get('chunk_text', '')}
+---"""
+
+    # Agar koi relevant content nahi mila
+    if not books_found and not chunks_context:
+        return jsonify({
+            "answer": "No book found related to this topic in our library database. Please try another topic.",
+            "books_found": []
+        }), 200
+
+    # Step 5: Groq LLM se answer generate karo
+    try:
+        groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+
+        prompt = f"""You are a library assistant. Answer only based on the books available in our library database.
+
+Rules:
+1. If the user asks for a chapter or paragraph summary so answer based on PDF content
+2. If the user asks about a book so answer based on its description  
+3. For general knowledge not in the database so say: "This information is not available in our library database."
+
+Library available books:
+{books_context}
+
+Books PDF related content:
+{chunks_context}
+
+User's question: {question}
+
+Answer in the same language as the user's question. Only talk about the books available in the database."""
+
+        response = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a library chatbot. Answer only based on the books available in the library database. For general knowledge questions not in the database — politely say: \"This information is not available in our library database.\""
+                },
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            max_tokens=1024,
+            temperature=0.5
+        )
+
+        answer = response.choices[0].message.content
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": f"LLM error: {str(e)}"}), 500
+
+    return jsonify({
+        "answer": answer,
+        "books_found": books_found
+    }), 200   
 
 if __name__ == "__main__":
     app.run(debug=True, port=8000)
