@@ -11,6 +11,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import date
 from sentence_transformers import SentenceTransformer
 from huggingface_hub import login
+from groq import Groq
 
 # JWT IMPORT
 from flask_jwt_extended import (
@@ -951,7 +952,7 @@ def add_book():
 
     # Embedding banao automatically
     try:
-        embed_text = f"Title: {request.form.get('title', '')} Author: {request.form.get('author', '')} Description: {request.form.get('description', '')}"
+        embed_text = f"Book_id: {request.form.get('book_id', '')} Title: {request.form.get('title', '')} Author: {request.form.get('author', '')} Description: {request.form.get('description', '')}"
         embedding = generate_embedding(embed_text)
     except:
         embedding = None
@@ -1900,7 +1901,7 @@ def unblock_user():
  
 # =========================
 # UPDATE FINE (ADMIN) (JWT♥)
-# Admin can update, increase or cancel fine
+# Admin can update fine
 # =========================
 class UpdateFineRequest(BaseModel):
     fine_id: str
