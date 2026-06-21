@@ -2162,5 +2162,16 @@ Answer in the same language as the user's question. Only talk about the books av
         "books_found": books_found
     }), 200   
 
+
+@app.route("/api/debug-env", methods=["GET"])
+def debug_env():
+    key = os.getenv("GROQ_API_KEY")
+    return jsonify({
+        "groq_key_exists": key is not None,
+        "groq_key_length": len(key) if key else 0,
+        "groq_key_start": key[:8] if key else None
+    })
+
+
 if __name__ == "__main__":
     app.run(debug=True, port=8000)
