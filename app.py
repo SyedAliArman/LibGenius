@@ -2166,12 +2166,17 @@ Answer in the same language as the user's question. Only talk about the books av
 @app.route("/api/debug-env", methods=["GET"])
 def debug_env():
     key = os.getenv("GROQ_API_KEY")
+    # Saari env variables ke naam list karo (values nahi, sirf naam - security ke liye)
+    all_env_keys = sorted([k for k in os.environ.keys()])
+    groq_related = [k for k in os.environ.keys() if "GROQ" in k.upper()]
     return jsonify({
         "groq_key_exists": key is not None,
         "groq_key_length": len(key) if key else 0,
-        "groq_key_start": key[:8] if key else None
+        "groq_key_start": key[:8] if key else None,
+        "total_env_vars": len(all_env_keys),
+        "groq_related_keys_found": groq_related,
+        "all_env_var_names": all_env_keys
     })
-
 
 if __name__ == "__main__":
     app.run(debug=True, port=8000)
