@@ -2053,6 +2053,32 @@ def chatbot():
     if not question:
         return jsonify({"error": "Question is empty"}), 400
 
+    # Step 0: Check karo kya yeh "kitni books hain" type ka sawal hai
+    count_keywords = [
+        "kitni books", "kitni kitabein", "total books", "how many books",
+        "books ki tadad", "library mein kitni", "kitne books"
+    ]
+    question_lower = question.lower()
+
+    if any(keyword in question_lower for keyword in count_keywords):
+        try:
+            count_res = supabase.table("book").select("book_id, title, author", count="exact").execute()
+            total_books = count_res.count
+
+            # Sari books ke titles ki list banao
+            book_titles = [book["title"] for book in count_res.data]
+            titles_text = "\n".join([f"{i+1}. {title}" for i, title in enumerate(book_titles)])
+
+            answer = f"Hamari library mein abhi total {total_books} books available hain:\n\n{titles_text}"
+
+            return jsonify({
+                "answer": answer,
+                "books_found": count_res.data,
+                "total_books": total_books
+            }), 200
+        except Exception as e:
+            return jsonify({"error": f"Count fetch failed: {str(e)}"}), 500
+
     # Step 1: Question ki embedding banao
     question_embedding = generate_embedding(question)
     if not question_embedding:
