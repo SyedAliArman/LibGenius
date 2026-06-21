@@ -2069,7 +2069,7 @@ def chatbot():
             book_titles = [book["title"] for book in count_res.data]
             titles_text = "\n".join([f"{i+1}. {title}" for i, title in enumerate(book_titles)])
 
-            answer = f"Hamari library mein abhi total {total_books} books available hain:\n\n{titles_text}"
+            answer = f"Our library currently has a total of {total_books} books available:\n\n{titles_text}"
 
             return jsonify({
                 "answer": answer,
