@@ -1266,7 +1266,7 @@ def get_book_reviews(book_id):
 # Rules: Max 4 books per user, book must be available
 # =========================
 class IssueBookRequest(BaseModel):
-    user_id: str
+    cms_id: str
     book_id: int
  
 @app.route("/api/admin/issue-book", methods=["POST"])
@@ -1281,13 +1281,14 @@ def issue_book():
     except ValidationError:
         return jsonify({"error": "Invalid data format"}), 400
  
-    user_id = body.user_id
     book_id = body.book_id
  
-    # Check user exists or not
-    user_check = supabase.table("users").select("user_id", "student_name").eq("user_id", user_id).execute()
+    # cms_id se user_id nikalo
+    user_check = supabase.table("users").select("user_id", "student_name").eq("cms_id", body.cms_id).execute()
     if not user_check.data:
         return jsonify({"error": "User not found"}), 404
+ 
+    user_id = user_check.data[0]["user_id"]
  
     # Check book exists or not
     book_check = supabase.table("book").select("*").eq("book_id", book_id).execute()
@@ -1316,6 +1317,7 @@ def issue_book():
  
     res = supabase.table("issued_books").insert({
         "user_id": user_id,
+        "cms_id": body.cms_id,
         "book_id": book_id,
         "issue_date": issue_date,
         "due_date": due_date,
@@ -1335,7 +1337,6 @@ def issue_book():
         "issue": res.data[0],
         "due_date": due_date
     }), 201
-
 
 # =========================
 # GET CURRENTLY ISSUED BOOKS BY USER (USER) (JWT♥)
