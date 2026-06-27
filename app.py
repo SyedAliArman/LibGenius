@@ -2167,18 +2167,37 @@ User's question: {question}
 
 Answer in the same language as the user's question, in natural flowing text."""
 
+        # -----------------------------
+        # Build messages with history
+        # -----------------------------
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a helpful library chatbot. "
+                    "Remember the previous conversation. "
+                    "Answer ONLY using the provided library context. "
+                    "If information is not available in the library, politely say so."
+                )
+            }
+        ]
+
+        # Previous Conversation
+        for msg in body.conversation_history:
+            messages.append({
+                "role": msg.role,
+                "content": msg.content
+            })
+
+        # Current Prompt
+        messages.append({
+            "role": "user",
+            "content": prompt
+        })
+
         response = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are a library chatbot. You only answer questions related to the books available in the database. For general knowledge questions, politely inform the user that you can only provide information about books in the library database."
-                },
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ],
+            messages=messages,
             max_tokens=1024,
             temperature=0.5
         )
@@ -2193,21 +2212,6 @@ Answer in the same language as the user's question, in natural flowing text."""
         "books_found": books_found
     }), 200
 
-
-@app.route("/api/debug-env", methods=["GET"])
-def debug_env():
-    key = os.getenv("GROQ_API_KEY")
-    # Saari env variables ke naam list karo (values nahi, sirf naam - security ke liye)
-    all_env_keys = sorted([k for k in os.environ.keys()])
-    groq_related = [k for k in os.environ.keys() if "GROQ" in k.upper()]
-    return jsonify({
-        "groq_key_exists": key is not None,
-        "groq_key_length": len(key) if key else 0,
-        "groq_key_start": key[:8] if key else None,
-        "total_env_vars": len(all_env_keys),
-        "groq_related_keys_found": groq_related,
-        "all_env_var_names": all_env_keys
-    })
 
 if __name__ == "__main__":
     app.run(debug=True, port=8000)
