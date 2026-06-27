@@ -2039,8 +2039,14 @@ def process_book_pdf(book_id, pdf_url):
 # Flow: Question → Embedding → Supabase search → Groq LLM → Answer
 # ==================================================================================================
 
+
+class ChatbotMessage(BaseModel):
+    role: str   # "user" or "assistant"
+    content: str
+
 class ChatbotRequest(BaseModel):
     question: str
+    conversation_history: list[ChatbotMessage] = []  # Previous conversations
 
 @app.route("/api/chatbot", methods=["POST"])
 @jwt_required()
@@ -2052,9 +2058,9 @@ def chatbot():
 
     question = body.question.strip()
     if not question:
-        return jsonify({"error": "Question is empty"}), 400
+        return jsonify({"error": "Question empty hai"}), 400
 
-    # Step 0: Check karo kya yeh "kitni books hain" type ka sawal hai
+    # Step 0: Check if this is a "how many books" type question
     count_keywords = [
         "kitni books", "kitni kitabein", "total books", "how many books",
         "books ki tadad", "library mein kitni", "kitne books"
@@ -2066,11 +2072,11 @@ def chatbot():
             count_res = supabase.table("book").select("book_id, title, author", count="exact").execute()
             total_books = count_res.count
 
-            # Sari books ke titles ki list banao
+            # Build list of all book titles
             book_titles = [book["title"] for book in count_res.data]
             titles_text = "\n".join([f"{i+1}. {title}" for i, title in enumerate(book_titles)])
 
-            answer = f"Our library currently has a total of {total_books} books available:\n\n{titles_text}"
+            answer = f"Hamari library mein abhi total {total_books} books available hain:\n\n{titles_text}"
 
             return jsonify({
                 "answer": answer,
@@ -2080,12 +2086,12 @@ def chatbot():
         except Exception as e:
             return jsonify({"error": f"Count fetch failed: {str(e)}"}), 500
 
-    # Step 1: Question ki embedding banao
+    # Step 1: Generate question embedding
     question_embedding = generate_embedding(question)
     if not question_embedding:
-        return jsonify({"error": "Embedding is not generated"}), 500
+        return jsonify({"error": "Embedding generate nahi hui"}), 500
 
-    # Step 2: Books search karo
+    # Step 2: Search books
     try:
         similar_books = supabase.rpc("match_books", {
             "query_embedding": question_embedding,
@@ -2094,7 +2100,7 @@ def chatbot():
     except Exception as e:
         return jsonify({"error": f"Books search failed: {str(e)}"}), 500
 
-    # Step 3: PDF Chunks mein bhi search karo
+    # Step 3: Search in PDF chunks as well
     try:
         similar_chunks = supabase.rpc("match_chunks", {
             "query_embedding": question_embedding,
@@ -2103,7 +2109,7 @@ def chatbot():
     except:
         similar_chunks = None
 
-    # Step 4: Context banao
+    # Step 4: Build context
     books_context = ""
     chunks_context = ""
     books_found = []
@@ -2130,27 +2136,26 @@ PDF Content:
 {chunk.get('chunk_text', '')}
 ---"""
 
-    # Agar koi relevant content nahi mila
+    # If no relevant content found
     if not books_found and not chunks_context:
         return jsonify({
-            "answer": "No book found related to this topic in our library database. Please try another topic.",
+            "answer": "Is topic se related koi book hamare library database mein nahi mili. Koi aur topic try karein.",
             "books_found": []
         }), 200
 
-    # Step 5: Groq LLM se answer generate karo
+    # Step 5: Generate answer using Groq LLM
     try:
-        print("GROQ Key Found:", bool(os.getenv("GROQ_API_KEY")))
         groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
-        prompt = f"""You are a library assistant. Answer only based on the books available in our library database.
+        prompt = f"""You are a friendly library assistant. Answer only based on the books available in our library database.
 
 Rules:
-1. Write in clear, natural paragraphs, like a helpful conversation, not a list of facts.
-2. If the user asks for a chapter or paragraph summary so answer based on PDF content.
-3. If the user asks about a book so answer based on its description.  
-4. For general knowledge not in the database so say: "This information is not available in our library database."
-5. Keep the tone warm and conversational, like ChatGPT or Claude would respond.
-6. Do not mention similarity scores or technical details, just talk about the book naturally.
+1. Write in clear, natural paragraphs — like a helpful conversation, not a list of facts
+2. If the user asks for a chapter or paragraph summary, answer using the PDF content
+3. If the user asks about a book in general, answer using its description
+4. For general knowledge not related to our library books, say: "This information is not available in our library database."
+5. Keep the tone warm and conversational, like ChatGPT or Claude would respond
+6. Do not mention similarity scores or technical details — just talk about the book naturally
 
 Library available books:
 {books_context}
@@ -2160,14 +2165,14 @@ Books PDF related content:
 
 User's question: {question}
 
-Answer in the same language as the user's question. Only talk about the books available in the database."""
+Answer in the same language as the user's question, in natural flowing text."""
 
         response = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
                 {
                     "role": "system",
-                    "content": "You are a library chatbot. Answer only based on the books available in the library database. For general knowledge questions not in the database — politely say: \"This information is not available in our library database.\""
+                    "content": "You are a library chatbot. You only answer questions related to the books available in the database. For general knowledge questions, politely inform the user that you can only provide information about books in the library database."
                 },
                 {
                     "role": "user",
@@ -2181,13 +2186,12 @@ Answer in the same language as the user's question. Only talk about the books av
         answer = response.choices[0].message.content
 
     except Exception as e:
-        traceback.print_exc()
         return jsonify({"error": f"LLM error: {str(e)}"}), 500
 
     return jsonify({
         "answer": answer,
         "books_found": books_found
-    }), 200   
+    }), 200
 
 
 @app.route("/api/debug-env", methods=["GET"])
