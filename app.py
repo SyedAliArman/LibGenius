@@ -250,7 +250,6 @@ def send_email_async(msg):
 # ===========================================================
 class SignupRequest(BaseModel):
     cms_id: str
-    email: EmailStr
     password: str
 
 class VerifyOTPRequest(BaseModel):
@@ -275,6 +274,12 @@ def signup():
         return jsonify({"error": "CMS not found."}), 404
  
     student = student_check.data[0]
+
+    # Get email from students table
+    email = students.get("email")
+
+    if not email:
+        return jsonify({"error": "No email found for this CMS ID."}), 400
  
  
     user_check = supabase.table("users").select("cms_id").eq("cms_id", body.cms_id).execute()
