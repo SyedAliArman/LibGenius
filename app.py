@@ -48,15 +48,20 @@ if os.getenv("HF_TOKEN"):
 
 app = Flask(__name__)
 
-CORS(app, resources={
-    r"/api/*": {
-        "origins": [
-            "http://localhost:3000",
-            "https://libgenius.netlify.app/"
-        ]
-    }
-})
-
+CORS(
+    app,
+    resources={
+        r"/api/*": {
+            "origins": [
+                "http://localhost:3000",
+                "https://libgenius.netlify.app"
+            ]
+        }
+    },
+    supports_credentials=True,
+    allow_headers=["Content-Type", "Authorization"],
+    methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+)
 
 # # ==================================================================================================
 # # BACKGROUND SCHEDULER - AUTO FINE EVERY DAY AT MIDNIGHT
