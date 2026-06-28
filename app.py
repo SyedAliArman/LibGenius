@@ -58,153 +58,153 @@ CORS(app, resources={
 })
 
 
-# ==================================================================================================
-# BACKGROUND SCHEDULER - AUTO FINE EVERY DAY AT MIDNIGHT
-# ==================================================================================================
-def calculate_daily_fines():
-    """
-    Checks overdue books daily.
-    Creates/updates fines when due date crosses.
-    """
+# # ==================================================================================================
+# # BACKGROUND SCHEDULER - AUTO FINE EVERY DAY AT MIDNIGHT
+# # ==================================================================================================
+# def calculate_daily_fines():
+#     """
+#     Checks overdue books daily.
+#     Creates/updates fines when due date crosses.
+#     """
 
-    with app.app_context():
-        try:
-            # Today's date
-            today = date.today()
+#     with app.app_context():
+#         try:
+#             # Today's date
+#             today = date.today()
 
-            print(f"\n[SCHEDULER] Running Daily Fine Check")
-            print(f"[SCHEDULER] Today's Date: {today}")
+#             print(f"\n[SCHEDULER] Running Daily Fine Check")
+#             print(f"[SCHEDULER] Today's Date: {today}")
 
-            # Only issued books
-            issued_res = (
-                supabase.table("issued_books")
-                .select("*")
-                .eq("status", "issued")
-                .execute()
-            )
+#             # Only issued books
+#             issued_res = (
+#                 supabase.table("issued_books")
+#                 .select("*")
+#                 .eq("status", "issued")
+#                 .execute()
+#             )
 
-            if not issued_res.data:
-                print("[SCHEDULER] No issued books found")
-                return
+#             if not issued_res.data:
+#                 print("[SCHEDULER] No issued books found")
+#                 return
 
-            print(f"[SCHEDULER] Found {len(issued_res.data)} issued books")
+#             print(f"[SCHEDULER] Found {len(issued_res.data)} issued books")
 
-            # Check every issued book
-            for issue in issued_res.data:
+#             # Check every issued book
+#             for issue in issued_res.data:
 
-                issue_id = issue["issue_id"]
-                user_id = issue["user_id"]
+#                 issue_id = issue["issue_id"]
+#                 user_id = issue["user_id"]
 
-                print(f"\nChecking Issue ID: {issue_id}")
+#                 print(f"\nChecking Issue ID: {issue_id}")
 
-                # Convert due date to date object
-                due_date = date.fromisoformat(issue["due_date"])
+#                 # Convert due date to date object
+#                 due_date = date.fromisoformat(issue["due_date"])
 
-                print(f"Due Date: {due_date}")
+#                 print(f"Due Date: {due_date}")
 
-                # If due date is crossed
-                if today > due_date:
+#                 # If due date is crossed
+#                 if today > due_date:
 
-                    # Overdue days calculate karo
-                    overdue_days = (today - due_date).days
+#                     # Overdue days calculate karo
+#                     overdue_days = (today - due_date).days
 
-                    # Rs.30 per day fine
-                    fine_amount = overdue_days * 30
+#                     # Rs.30 per day fine
+#                     fine_amount = overdue_days * 30
 
-                    print(
-                        f"OVERDUE: {overdue_days} days | Fine: Rs.{fine_amount}"
-                    )
+#                     print(
+#                         f"OVERDUE: {overdue_days} days | Fine: Rs.{fine_amount}"
+#                     )
 
-                    # Check if unpaid fine already exists
-                    existing_fine = (
-                        supabase.table("fine")
-                        .select("*")
-                        .eq("issue_id", issue_id)
-                        .eq("is_paid", False)
-                        .execute()
-                    )
+#                     # Check if unpaid fine already exists
+#                     existing_fine = (
+#                         supabase.table("fine")
+#                         .select("*")
+#                         .eq("issue_id", issue_id)
+#                         .eq("is_paid", False)
+#                         .execute()
+#                     )
 
-                    # If fine already exists, update it
-                    if existing_fine.data:
+#                     # If fine already exists, update it
+#                     if existing_fine.data:
 
-                        print(
-                            f"[SCHEDULER] Updating Fine for Issue ID {issue_id}"
-                        )
+#                         print(
+#                             f"[SCHEDULER] Updating Fine for Issue ID {issue_id}"
+#                         )
 
-                        update_res = (
-                            supabase.table("fine")
-                            .update({
-                                "fine_amount": fine_amount,
-                                "fine_date": today.isoformat(),
-                                "paid_date": None 
-                            })
-                            .eq("issue_id", issue_id)
-                            .eq("is_paid", False)
-                            .execute()
-                        )
+#                         update_res = (
+#                             supabase.table("fine")
+#                             .update({
+#                                 "fine_amount": fine_amount,
+#                                 "fine_date": today.isoformat(),
+#                                 "paid_date": None 
+#                             })
+#                             .eq("issue_id", issue_id)
+#                             .eq("is_paid", False)
+#                             .execute()
+#                         )
 
-                        print(
-                            f"[SCHEDULER] Fine Updated Successfully"
-                        )
+#                         print(
+#                             f"[SCHEDULER] Fine Updated Successfully"
+#                         )
 
-                    # Warna naya fine create karo
-                    else:
+#                     # Warna naya fine create karo
+#                     else:
 
-                        print(
-                            f"[SCHEDULER] Creating New Fine for Issue ID {issue_id}"
-                        )
+#                         print(
+#                             f"[SCHEDULER] Creating New Fine for Issue ID {issue_id}"
+#                         )
 
-                        insert_res = (
-                            supabase.table("fine")
-                            .insert({
-                                "user_id": user_id,
-                                "issue_id": issue_id,
-                                "return_id": None,
-                                "fine_amount": fine_amount,
-                                "fine_date": today.isoformat(),
-                                "is_paid": False,
-                                "paid_date": None
-                            })
-                            .execute()
-                        )
+#                         insert_res = (
+#                             supabase.table("fine")
+#                             .insert({
+#                                 "user_id": user_id,
+#                                 "issue_id": issue_id,
+#                                 "return_id": None,
+#                                 "fine_amount": fine_amount,
+#                                 "fine_date": today.isoformat(),
+#                                 "is_paid": False,
+#                                 "paid_date": None
+#                             })
+#                             .execute()
+#                         )
 
-                        print(
-                            f"[SCHEDULER] New Fine Added Successfully"
-                        )
+#                         print(
+#                             f"[SCHEDULER] New Fine Added Successfully"
+#                         )
 
-                else:
-                    print(
-                        f"[SCHEDULER] Book is not overdue yet"
-                    )
+#                 else:
+#                     print(
+#                         f"[SCHEDULER] Book is not overdue yet"
+#                     )
 
-            print("\n[SCHEDULER] Daily Fine Check Completed Successfully")
+#             print("\n[SCHEDULER] Daily Fine Check Completed Successfully")
 
-        except Exception as e:
-            import traceback
+#         except Exception as e:
+#             import traceback
 
-            print("\n[SCHEDULER] ERROR OCCURRED")
-            traceback.print_exc()
+#             print("\n[SCHEDULER] ERROR OCCURRED")
+#             traceback.print_exc()
 
 
-# ==================================================
-# Scheduler Setup
-# ==================================================
+# # ==================================================
+# # Scheduler Setup
+# # ==================================================
 
-scheduler = BackgroundScheduler()
+# scheduler = BackgroundScheduler()
 
-# Roz raat 12 baje chalega
-scheduler.add_job(
-    func=calculate_daily_fines,
-    trigger="cron",
-    hour=0,
-    minute=0,
-    id="daily_fine_job",
-    replace_existing=True
-)
+# # Roz raat 12 baje chalega
+# scheduler.add_job(
+#     func=calculate_daily_fines,
+#     trigger="cron",
+#     hour=0,
+#     minute=0,
+#     id="daily_fine_job",
+#     replace_existing=True
+# )
 
-scheduler.start()
+# scheduler.start()
 
-print("[SCHEDULER] Daily Fine Scheduler Started")
+# print("[SCHEDULER] Daily Fine Scheduler Started")
 
 # ================================
 # SUPABASE CONFRIGURATION
