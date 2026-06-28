@@ -2154,6 +2154,7 @@ Rules:
 5. Keep the tone warm and conversational, like ChatGPT or Claude would respond
 6. Do not mention similarity scores or technical details — just talk about the book naturally
 7. If the user says "this book", "it", "that book" or similar references, look at the conversation history to identify which book they are referring to and answer accordingly
+8. Keep your answer SHORT and CONCISE — maximum 3 to 4 lines only. Do not write long paragraphs.
 
 Library available books:
 {books_context}
