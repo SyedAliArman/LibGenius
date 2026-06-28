@@ -279,13 +279,11 @@ def signup():
         return jsonify({"error": "CMS not found."}), 404
  
     student = student_check.data[0]
-
-    # Get email from students table
-    email = students.get("email")
-
-    if not email:
-        return jsonify({"error": "No email found for this CMS ID."}), 400
  
+    # Email automatically students table se nikalo
+    student_email = student.get("email")
+    if not student_email:
+        return jsonify({"error": "No email found for this CMS in student record"}), 400
  
     user_check = supabase.table("users").select("cms_id").eq("cms_id", body.cms_id).execute()
     if user_check.data:
@@ -297,7 +295,7 @@ def signup():
     # Users table mein insert karo - student ka sara data bhi saath
     insert_res = supabase.table("users").insert({
         "cms_id": body.cms_id,
-        "email": body.email,
+        "email": student_email,
         "password_hash": hashed_pw,
         "otp": otp,
         "otp_created_at": datetime.now(timezone.utc).isoformat(),
@@ -312,10 +310,9 @@ def signup():
         "phone_no": student.get("phone_no")
     }).execute()
  
-
     try:
         msg = Message(subject="Verification Code",
-        recipients=[body.email],
+        recipients=[student_email],
         body=f"Your OTP for App is: {otp}. It will expire in 5 minutes"
         )
         threading.Thread(target=send_email_async, args=(msg,)).start()
@@ -325,7 +322,7 @@ def signup():
         }), 201
     except Exception as e:
         return jsonify({"error Failed to send email": str(e)}), 500
-
+ 
 # =========================
 # 2. VERIFY OTP                                                                                                                2
 # =========================
