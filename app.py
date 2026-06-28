@@ -2046,7 +2046,7 @@ class ChatbotMessage(BaseModel):
 
 class ChatbotRequest(BaseModel):
     question: str
-    conversation_history: list[ChatbotMessage] = []  # Previous conversations
+    conversation_history: list[ChatbotMessage] = []  # Pichli conversations
 
 @app.route("/api/chatbot", methods=["POST"])
 @jwt_required()
@@ -2076,7 +2076,7 @@ def chatbot():
             book_titles = [book["title"] for book in count_res.data]
             titles_text = "\n".join([f"{i+1}. {title}" for i, title in enumerate(book_titles)])
 
-            answer = f"Our library currently has a total of {total_books}. Here are the titles: {titles_text}"
+            answer = f"Hamari library mein abhi total {total_books} books available hain:\n\n{titles_text}"
 
             return jsonify({
                 "answer": answer,
@@ -2087,7 +2087,24 @@ def chatbot():
             return jsonify({"error": f"Count fetch failed: {str(e)}"}), 500
 
     # Step 1: Generate question embedding
-    question_embedding = generate_embedding(question)
+    # Agar question mein "this", "it", "that" jaisi reference words hain
+    # toh pichli history se context nikal ke question ko enrich karo
+    reference_words = ["this book", "it", "that book", "this one", "the book", "iska", "is book", "woh book", "yeh book"]
+    question_for_embedding = question
+
+    if any(word in question.lower() for word in reference_words):
+        if body.conversation_history:
+            # Pichli history se last assistant message nikalo
+            last_context = ""
+            for msg in reversed(body.conversation_history):
+                if msg.role == "assistant":
+                    last_context = msg.content[:300]  # first 300 chars enough
+                    break
+            # Question ko enrich karo context ke saath
+            if last_context:
+                question_for_embedding = f"{question} {last_context}"
+
+    question_embedding = generate_embedding(question_for_embedding)
     if not question_embedding:
         return jsonify({"error": "Embedding generate nahi hui"}), 500
 
@@ -2168,37 +2185,18 @@ User's question: {question}
 
 Answer in the same language as the user's question, in natural flowing text."""
 
-        # -----------------------------
-        # Build messages with history
-        # -----------------------------
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are a helpful library chatbot. "
-                    "Remember the previous conversation. "
-                    "Answer ONLY using the provided library context. "
-                    "If information is not available in the library, politely say so."
-                )
-            }
-        ]
-
-        # Previous Conversation
-        for msg in body.conversation_history:
-            messages.append({
-                "role": msg.role,
-                "content": msg.content
-            })
-
-        # Current Prompt
-        messages.append({
-            "role": "user",
-            "content": prompt
-        })
-
         response = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
-            messages=messages,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a library chatbot. You only answer questions related to the books available in the database. For general knowledge questions, politely refuse and inform the user that you can only provide information about books in the library database."
+                },
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
             max_tokens=1024,
             temperature=0.5
         )
