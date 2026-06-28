@@ -1321,7 +1321,8 @@ def issue_book():
         "book_id": book_id,
         "issue_date": issue_date,
         "due_date": due_date,
-        "status": "issued"
+        "status": "issued",
+        "fine_amount": 0
     }).execute()
  
     # Decrease book quantity
@@ -1332,12 +1333,17 @@ def issue_book():
         "status": new_status
     }).eq("book_id", book_id).execute()
  
+    # Fine table se fine amount check karo agar koi fine lagi hai
+    fine_res = supabase.table("fine").select("fine_amount, is_paid").eq("issue_id", res.data[0]["issue_id"]).eq("is_paid", False).execute()
+    fine_amount = fine_res.data[0]["fine_amount"] if fine_res.data else 0
+ 
     return jsonify({
         "message": "Book issued successfully",
         "issue": res.data[0],
-        "due_date": due_date
+        "due_date": due_date,
+        "fine_amount": fine_amount
     }), 201
-
+ 
 # =========================
 # GET CURRENTLY ISSUED BOOKS BY USER (USER) (JWT♥)
 # Only logged in user sees own issued books
@@ -1788,30 +1794,6 @@ def drop_book():
     }).execute()
  
     return_id = return_res.data[0]["return_id"]
-    fine_amount = 0
-    fine_id = None
- 
-    # If late then create fine
-    if is_late:
-        overdue_days = (drop_date.date() - due_date).days
-        fine_amount = overdue_days * 30  # 30 rupees per day
- 
-        fine_res = supabase.table("fine").insert({
-            "user_id": user_id,
-            "issue_id": issue_id,
-            "return_id": return_id,
-            "fine_amount": fine_amount,
-            "fine_date": drop_date.date().isoformat(),
-            "is_paid": False,
-            "paid_date": None
-        }).execute()
- 
-        fine_id = fine_res.data[0]["fine_id"]
- 
-        # Link fine_id in return_logs
-        supabase.table("return_logs").update({
-            "fine_id": fine_id
-        }).eq("return_id", return_id).execute()
  
     # Issued books status update
     supabase.table("issued_books").update({
@@ -1833,11 +1815,9 @@ def drop_book():
         "book_id": body.book_id,
         "drop_date": drop_date.date().isoformat(),
         "late_return": is_late,
-        "fine_amount": fine_amount,
         "return_id": return_id,
         "category_id": book["category_id"]
     }), 200
-
 
 
 # =========================
