@@ -17,6 +17,10 @@ import PyPDF2
 import requests
 import io
 import traceback
+import firebase_admin
+from firebase_admin import credentials, messaging
+from typing import Optional
+
 
 # JWT IMPORT
 from flask_jwt_extended import (
@@ -63,6 +67,91 @@ CORS(
     allow_headers=["Content-Type", "Authorization"],
     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"]
 )
+
+
+# ==========================================================
+# 1. FIREBASE ADMIN SDK INITIALIZATION
+# ==========================================================
+try:
+    # .env se alag alag values nikal kar khud dictionary banayein
+    private_key = os.getenv("FIREBASE_PRIVATE_KEY")
+    if private_key:
+        # \\n ko asli newline \n mein badlein taake Firebase key read kar sake
+        private_key = private_key.replace("\\n", "\n")
+
+    cred_dict = {
+        "type": "service_account",
+        "project_id": os.getenv("FIREBASE_PROJECT_ID"),
+        "private_key_id": os.getenv("FIREBASE_PRIVATE_KEY_ID"),
+        "private_key": private_key,
+        "client_email": os.getenv("FIREBASE_CLIENT_EMAIL"),
+        "token_uri": "https://oauth2.googleapis.com/token",
+    }
+
+    # Firebase initialize karein
+    cred = credentials.Certificate(cred_dict)
+    firebase_admin.initialize_app(cred)
+    print("Firebase Initialized Successfully!")
+
+except Exception as e:
+    print(f"Firebase Initialization Error: {str(e)}")
+
+# ==========================================================
+# 2. FIREBASE NOTIFICATION CORE HELPER
+# ==========================================================
+def send_fcm_notification(fcm_token, title, body):
+    """
+    Sends a push notification to a specific device token using FCM.
+    """
+    if not fcm_token:
+        print("Notification skipped: FCM Token is missing or empty.")
+        return False
+
+    message = messaging.Message(
+        notification=messaging.Notification(
+            title=title,
+            body=body,
+        ),
+        token=fcm_token,
+    )
+
+    try:
+        response = messaging.send(message)
+        print(f"Push Notification sent successfully: {response}")
+        return True
+    except Exception as e:
+        print(f"FCM messaging payload dispatch failed: {str(e)}")
+        return False
+
+
+# ==========================================================
+# 🌟 PYDANTIC BASE MODEL FOR FCM TOKEN
+# ==========================================================
+class SaveFCMTokenRequest(BaseModel):
+    fcm_token: str 
+
+# ==========================================================
+# 3. ENDPOINT: FRONTEND SE FCM TOKEN LEKAR SAVE KARNE KE LIYE
+# ==========================================================
+@app.route("/api/user/save-fcm-token", methods=["POST"])
+@jwt_required()
+def save_fcm_token():
+    user_id = get_jwt_identity()
+    
+    # 🌟 Input Data ko Validate karein using BaseModel
+    try:
+        body = SaveFCMTokenRequest(**request.json)
+    except ValidationError:
+        return jsonify({"error": "Invalid data format. 'fcm_token' is required and must be a string."}), 400
+
+    # Ab aap body.fcm_token se direct data use kar sakte hain
+    try:
+        # Supabase ke table 'user' mein token update karein
+        res = supabase.table("users").update({"fcm_token": body.fcm_token}).eq("user_id", user_id).execute()
+        
+        return jsonify({"message": "Device FCM Token synced successfully on backend."}), 200
+    except Exception as e:
+        return jsonify({"error": f"Database integration failed: {str(e)}"}), 500
 
 # # ==================================================================================================
 # # BACKGROUND SCHEDULER - AUTO FINE EVERY DAY AT MIDNIGHT
@@ -264,6 +353,7 @@ class VerifyOTPRequest(BaseModel):
 class LoginRequest(BaseModel):
     cms_id: str
     password: str
+    fcm_token: Optional[str] = None
 
 # =========================
 # 1. SIGN UP                                                                                                            1
@@ -419,6 +509,16 @@ def login():
     if not bcrypt.checkpw(body.password.encode('utf-8'), user["password_hash"].encode('utf-8')):
         return jsonify({"error": "Incorrect password"}), 401
  
+    # 🌟 1. AGAR REQUEST MEIN FCM TOKEN AAYA HAI, TOH DATABASE MEIN SAVE KAREIN
+    if body.fcm_token:
+        try:
+            supabase.table("users").update({"fcm_token": body.fcm_token}).eq("cms_id", body.cms_id).execute()
+            # Local variable 'user' ko bhi update kar dete hain taake response mein naya token dikhe
+            user["fcm_token"] = body.fcm_token 
+        except Exception as e:
+            print(f"Error saving FCM token during login: {str(e)}")
+            # Isko hum return nahi kar rahe taake token ki wajah se login fail na ho
+
     access_token = create_access_token(identity=body.cms_id)
  
     return jsonify({
@@ -426,7 +526,6 @@ def login():
         "access_token": access_token,
         "student_data": user
     })
-
 # ==================================================================================================
 # FORGET PASSWORD APIS
 # ==================================================================================================
@@ -1369,46 +1468,48 @@ def issue_book():
     identity = get_jwt_identity()
     if not identity.startswith("admin:"):
         return jsonify({"error": "Unauthorized"}), 403
- 
+
     try:
         body = IssueBookRequest(**request.json)
     except ValidationError:
         return jsonify({"error": "Invalid data format"}), 400
- 
+
     book_id = body.book_id
- 
-    # cms_id se user_id nikalo
-    user_check = supabase.table("users").select("user_id", "student_name").eq("cms_id", body.cms_id).execute()
+
+    # 1. cms_id se user_id aur fcm_token dono nikalo
+    user_check = supabase.table("users").select("user_id", "student_name", "fcm_token").eq("cms_id", body.cms_id).execute()
     if not user_check.data:
         return jsonify({"error": "User not found"}), 404
- 
+
     user_id = user_check.data[0]["user_id"]
- 
+    user_fcm_token = user_check.data[0].get("fcm_token") # 🌟 FCM Token yahan mil gaya
+
     # Check book exists or not
     book_check = supabase.table("book").select("*").eq("book_id", book_id).execute()
     if not book_check.data:
         return jsonify({"error": "Book not found"}), 404
- 
+
     book = book_check.data[0]
- 
+    book_title = book.get("title", "Library Book") # 🌟 Title notification ke liye save kiya
+
     # Check book is available or not
     if book["quantity"] <= 0 or book["status"].lower() != "available":
         return jsonify({"error": "Book not available"}), 400
- 
+
     # Check user already have 4 books or not
     issued_check = supabase.table("issued_books").select("issue_id").eq("user_id", user_id).eq("status", "issued").execute()
     if len(issued_check.data) >= 4:
         return jsonify({"error": "Student already has 4 books issued. Return a book first."}), 400
- 
+
     # Check same book already issued to this user or not
     duplicate_check = supabase.table("issued_books").select("issue_id").eq("user_id", user_id).eq("book_id", book_id).eq("status", "issued").execute()
     if duplicate_check.data:
         return jsonify({"error": "This book is already issued to this student"}), 400
- 
+
     # Issue the book - due date 14 days later
     issue_date = datetime.now(timezone.utc).date().isoformat()
     due_date = (datetime.now(timezone.utc) + timedelta(days=14)).date().isoformat()
- 
+
     res = supabase.table("issued_books").insert({
         "user_id": user_id,
         "cms_id": body.cms_id,
@@ -1418,7 +1519,7 @@ def issue_book():
         "status": "issued",
         "fine_amount": 0
     }).execute()
- 
+
     # Decrease book quantity
     new_quantity = book["quantity"] - 1
     new_status = "available" if new_quantity > 0 else "unavailable"
@@ -1426,11 +1527,25 @@ def issue_book():
         "quantity": new_quantity,
         "status": new_status
     }).eq("book_id", book_id).execute()
- 
+
     # Fine table se fine amount check karo agar koi fine lagi hai
     fine_res = supabase.table("fine").select("fine_amount, is_paid").eq("issue_id", res.data[0]["issue_id"]).eq("is_paid", False).execute()
     fine_amount = fine_res.data[0]["fine_amount"] if fine_res.data else 0
- 
+
+    # ==========================================================
+    # 🌟 AUTOMATIC PUSH NOTIFICATION TRIGGER
+    # ==========================================================
+    if user_fcm_token:
+        # Pyaara sa dynamic notification alert string
+        notif_title = "Book Issued Successfully! 📚"
+        notif_body = f"Hi {user_check.data[0]['student_name']}, '{book_title}' has been issued to your account. Please return it before {due_date}."
+        
+        # Firebase helper function execute kiya
+        send_fcm_notification(fcm_token=user_fcm_token, title=notif_title, body=notif_body)
+    else:
+        print(f"Notification skipped: No FCM Token registered for CMS ID {body.cms_id}")
+    # ==========================================================
+
     return jsonify({
         "message": "Book issued successfully",
         "issue": res.data[0],
