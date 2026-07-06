@@ -10,6 +10,6 @@ flask-cors
 apscheduler
 sentence-transformers
 huggingface-hub
-groq
 PyPDF2
 requests
+google-generativeai

@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, url_for, g
+from flask import Flask, request, jsonify, url_for, g, Response
 from flask_mail import Mail, Message
 import os, uuid, bcrypt, random
 from supabase import create_client, Client
@@ -11,7 +11,8 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import date
 from sentence_transformers import SentenceTransformer
 from huggingface_hub import login
-from groq import Groq
+from google import genai
+from google.genai import types
 import PyPDF2
 import requests
 import io
@@ -27,7 +28,7 @@ from flask_jwt_extended import (
 
 
 # Model ek baar load hoga server start pe
-embedding_model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
+embedding_model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2', token=False)
  
 def generate_embedding(text):
     try:
@@ -963,9 +964,26 @@ def add_book():
 
     # Embedding banao automatically
     try:
-        embed_text = f"Book_id: {request.form.get('book_id', '')} Title: {request.form.get('title', '')} Author: {request.form.get('author', '')} Description: {request.form.get('description', '')}"
+        category_id = request.form.get('category_id', '')
+
+        # Category table alag hai — pehle wahan se category ka naam nikalo
+        category_name = ""
+        if category_id:
+            try:
+                cat_res = supabase.table("category").select("category_name").eq("category_id", category_id).single().execute()
+                category_name = cat_res.data.get("category_name", "") if cat_res.data else ""
+            except Exception:
+                category_name = ""
+
+        embed_text = (
+            f"Book_id: {request.form.get('book_id', '')} "
+            f"Title: {request.form.get('title', '')} "
+            f"Author: {request.form.get('author', '')} "
+            f"Category: {category_name} "
+            f"Description: {request.form.get('description', '')}"
+        )
         embedding = generate_embedding(embed_text)
-    except:
+    except Exception:
         embedding = None
  
     # Book insert karo
@@ -1082,12 +1100,45 @@ def update_book(book_id):
                 update_data["book_cover_page"] = supabase.storage.from_("book-covers").get_public_url(cover_name)
             except Exception as e:
                 return jsonify({"error": f"Cover image upload failed: {str(e)}"}), 500
+
+    # Embedding banao automatically
+    try:
+        category_id = request.form.get('category_id', '')
+
+        # Category table alag hai — pehle wahan se category ka naam nikalo
+        category_name = ""
+        if category_id:
+            try:
+                cat_res = supabase.table("category").select("category_name").eq("category_id", category_id).single().execute()
+                category_name = cat_res.data.get("category_name", "") if cat_res.data else ""
+            except Exception:
+                category_name = ""
+
+        embed_text = (
+            f"Book_id: {request.form.get('book_id', '')} "
+            f"Title: {request.form.get('title', '')} "
+            f"Author: {request.form.get('author', '')} "
+            f"Category: {category_name} "
+            f"Description: {request.form.get('description', '')}"
+        )
+        embedding = generate_embedding(embed_text)
+    except Exception:
+        embedding = None
  
     if not update_data:
         return jsonify({"error": "No data to update"}), 400
  
     res = supabase.table("book").update(update_data).eq("book_id", book_id).execute()
- 
+
+    book_data = res.data[0]
+    # Agar PDF hai toh chunks process karo (agar nayi PDF upload hui hai)
+    if book_pdf_url and update_data.get("book_pdf_url") == book_pdf_url:
+        threading.Thread(
+            target=process_book_pdf,
+            args=(book_data["book_id"], book_pdf_url)
+        ).start()
+
+
     return jsonify({
         "message": "Book updated successfully",
         "book": res.data[0]
@@ -1143,6 +1194,42 @@ def delete_book():
             "title": title
         }), 200
 
+
+# ==========================================
+# GET BOOK PDF URL (USER) (JWT♥)
+# Only logged-in users can read the PDF
+# ==========================================
+@app.route("/api/books/<int:book_id>/pdf/view", methods=["GET"])
+@jwt_required()
+def view_book_pdf(book_id):
+    # 1. Check if the book and its PDF resource exist in database
+    book_res = supabase.table("book").select("book_id, title, book_pdf_url").eq("book_id", book_id).execute()
+    if not book_res.data:
+        return jsonify({"error": "Book record not found"}), 404
+        
+    pdf_url = book_res.data[0].get("book_pdf_url")
+    if not pdf_url:
+        return jsonify({"error": "PDF binary source not available for this book"}), 404
+        
+    try:
+        # 2. Stream the file data safely from private/public storage backend
+        pdf_stream = requests.get(pdf_url, stream=True)
+        
+        # 3. Build a pipeline response with target application/pdf headers
+        response = Response(
+            pdf_stream.iter_content(chunk_size=4096), 
+            content_type="application/pdf"
+        )
+        
+        # 🌟 FORCE INLINE INTERPRETATION (Prevents immediate local downloading)
+        response.headers["Content-Disposition"] = "inline; filename=protected_document.pdf"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        
+        return response
+        
+    except Exception as stream_error:
+        print(f"Streaming asset pipeline failed: {str(stream_error)}")
+        return jsonify({"error": "Could not establish secure read pipeline for this document."}), 500
 
 
 # ==================================================================================================
@@ -2020,21 +2107,248 @@ def process_book_pdf(book_id, pdf_url):
         print(f"PDF processing error: {str(e)}")
         return False
 
+# ==================================================================================================
+# PDF CHUNKING HELPER FUNCTIONS
+# ==================================================================================================
+def extract_text_from_pdf_url(pdf_url):
+    try:
+        response = requests.get(pdf_url, timeout=30)
+        pdf_file = io.BytesIO(response.content)
+        reader = PyPDF2.PdfReader(pdf_file)
+        text = ""
+        for page in reader.pages:
+            text += page.extract_text() or ""
+        return text
+    except Exception as e:
+        print(f"PDF extract error: {str(e)}")
+        return None
+
+def split_into_chunks(text, chunk_size=500):
+    words = text.split()
+    chunks = []
+    for i in range(0, len(words), chunk_size):
+        chunk = " ".join(words[i:i + chunk_size])
+        if chunk.strip():
+            chunks.append(chunk)
+    return chunks
+
+def process_book_pdf(book_id, pdf_url):
+    try:
+        text = extract_text_from_pdf_url(pdf_url)
+        if not text:
+            print(f"PDF text not found for book_id: {book_id}")
+            return False
+
+        chunks = split_into_chunks(text, chunk_size=500)
+        supabase.table("book_chunks").delete().eq("book_id", book_id).execute()
+
+        for index, chunk in enumerate(chunks):
+            # 🌟 CLEAN NULL BYTES FROM THE CHUNK TEXT BEFORE PROCESSING
+            clean_chunk = chunk.replace('\x00', '').replace('\u0000', '')
+            
+            # Use clean_chunk instead of chunk for embedding generation
+            embedding = generate_embedding(clean_chunk)
+            if embedding:
+                supabase.table("book_chunks").insert({
+                    "book_id": book_id,
+                    "chunk_text": clean_chunk,  # 🌟 Insert the cleaned text here
+                    "chunk_index": index,
+                    "embedding": embedding
+                }).execute()
+                
+        print(f"PDF processing complete for book_id: {book_id}")
+        return True
+    except Exception as e:
+        print(f"PDF processing error: {str(e)}")
+        return False
+
+
+# ==================================================================================================
+# NEW HELPER FUNCTION: Contextual Query Condensation
+# ==================================================================================================
+def condense_query(user_question, conversation_history):
+    """
+    Rewrites a follow-up question (like 'who is the main character?') into a standalone question 
+    (like 'Who is the main character of St. James's Park?') using the history.
+    """
+    if not conversation_history:
+        return user_question
+
+    # Format history into a clean string block for the model
+    history_str = ""
+    for msg in conversation_history[-5:]: # Look at last 5 turns for context
+        role = getattr(msg, 'role', None) or msg.get('role', 'user')
+        content = getattr(msg, 'content', None) or msg.get('content', '')
+        history_str += f"{role.upper()}: {content}\n"
+
+
+    condense_prompt = f"""
+    Given the following conversation history and a follow-up question, rewrite the follow-up question to be a standalone question that includes all necessary context (like specific book titles, authors, or subjects being discussed). Do not answer the question, just rewrite it into one clear sentence.
+
+    Conversation History:
+    {history_str}
+    
+    Follow-up Question: {user_question}
+    Standalone Question:"""
+
+    try:
+        # Temporary client just to quickly clean up the query string
+        temp_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+        response = temp_client.models.generate_content(
+            model="gemini-2.5-flash-lite",
+            contents=condense_prompt
+        )
+        return response.text.strip()
+    except Exception as e:
+        print(f"Error condensing query: {e}")
+        return user_question  # Fallback to original user query if LLM fails
 
 # ==================================================================================================
 # CHATBOT API (JWT)
 # Flow: Question → Embedding → Supabase search → Groq LLM → Answer
 # ==================================================================================================
 
-
 class ChatbotMessage(BaseModel):
-    role: str   # "user" or "assistant"
+    role: str   
     content: str
-
+ 
 class ChatbotRequest(BaseModel):
     question: str
-    conversation_history: list[ChatbotMessage] = []  # Pichli conversations
+    conversation_history: list[ChatbotMessage] = []
+ 
+# @app.route("/api/chatbot", methods=["POST"])
+# @jwt_required()
+# def chatbot():
+#     try:
+#         body = ChatbotRequest(**request.json)
+#     except ValidationError:
+#         return jsonify({"error": "Invalid data format"}), 400
+ 
+#     question = body.question.strip()
+#     if not question:
+#         return jsonify({"error": "Question parameter is missing or blank"}), 400
+ 
+#     # Step 0: Handle catalog aggregations
+#     count_keywords = ["kitni books", "kitni kitabein", "total books", "how many books", "books ki tadad", "library mein kitni", "kitne books"]
+#     if any(k in question.lower() for k in count_keywords):
+#         try:
+#             count_res = supabase.table("book").select("book_id, title, author").execute()
+#             total_books = len(count_res.data)
+#             book_titles = [book["title"] for book in count_res.data]
+#             titles_text = "\n".join([f"{i+1}. {title}" for i, title in enumerate(book_titles)])
+#             answer = f"Our library currently features a total of {total_books} books:\n\n{titles_text}"
+#             return jsonify({
+#                 "answer": answer,
+#                 "books_found": count_res.data,
+#                 "total_books": total_books
+#             }), 200
+#         except Exception as e:
+#             return jsonify({"error": f"Count fetch failed: {str(e)}"}), 500
+ 
+#     # ✨ STEP 1: CONDENSE QUERY (Rewriting pronouns 'it', 'this book', etc.)
+#     # We call our new helper here to replace your old manual string-appending logic.
+#     search_query = condense_query(question, body.conversation_history)
+ 
+#     # Pass 'search_query' into your model to get a hyper-focused vector embedding
+#     question_embedding = generate_embedding(search_query)
+#     if not question_embedding:
+#         return jsonify({"error": "Embedding initialization failed"}), 500
+ 
+#     # Step 2 & 3: Match Metadata & Chunks from Supabase Vector Storage
+#     try:
+#         similar_books = supabase.rpc("match_books", {"query_embedding": question_embedding, "match_count": 5}).execute()
+#     except Exception as e:
+#         return jsonify({"error": f"Books vector match failed: {str(e)}"}), 500
+ 
+#     try:
+#         similar_chunks = supabase.rpc("match_chunks", {"query_embedding": question_embedding, "match_count": 5}).execute()
+#     except:
+#         similar_chunks = None
+ 
+#     # Step 4: Map Retrieval Context payloads
+#     books_context = ""
+#     chunks_context = ""
+#     books_found = []
+ 
+#     if similar_books.data:
+#         for book in similar_books.data:
+#             if book.get("similarity", 0) > 0.5:
+#                 books_context += f"\nBook: {book.get('title', '')}\nAuthor: {book.get('author', '')}\nDescription: {book.get('description', 'No description available')}\n---"
+#                 books_found.append({
+#                     "title": book.get("title"),
+#                     "author": book.get("author"),
+#                     "similarity": round(book.get("similarity", 0), 2)
+#                 })
+ 
+#     if similar_chunks and similar_chunks.data:
+#         for chunk in similar_chunks.data:
+#             if chunk.get("similarity", 0) > 0.3:
+#                 chunks_context += f"\nPDF Content excerpt:\n{chunk.get('chunk_text', '')}\n---"
+ 
+#     # Strictly isolate answering paths from generic non-library context
+#     if not books_found and not chunks_context:
+#         return jsonify({
+#             "answer": "No book found related to this topic in our library database. Please try another topic.",
+#             "books_found": []
+#         }), 200
+ 
+#     # Step 5: Process safely through Gemini 2.5 Flash SDK
+#     try:
+#         gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+ 
+#         # Map conversation history safely using Content types
+#         chat_history = []
+#         for msg in body.conversation_history[-10:]:
+#             chat_history.append(
+#                 types.Content(
+#                     role="user" if msg.role == "user" else "model",
+#                     parts=[types.Part.from_text(text=msg.content)]
+#                 )
+#             )
+ 
+#         system_instruction = """You are a friendly library assistant chatbot named LibGenius.
+# You must answer user questions ONLY using the extracted Library Books details and PDF contents provided in the user message prompt.
 
+# CRITICAL INSTRUCTIONS:
+# 1. Grounding: If specific PDF content parts are missing but the book exists in the catalog context, provide a brief high-level summary of that book if you know it, otherwise use the fallback message.
+# 2. Multi-turn Resolution: If the user requests generic attributes or names ("who is the character?", "summarize it"), look at the conversation history to verify which book they are targeting.
+# 3. Length Constraints: Keep your responses highly concise—maximum of 3 to 4 lines only. Do not output raw markdown lists unless necessary.
+# 4. Language Match: Automatically match the user's input language (English, Urdu/Roman-Urdu, etc.).
+# 5. Technical Blindness: Never output internal metrics like similarity scores or database indices."""
+
+#         user_prompt_content = f"""Here is the retrieved context from our library system to build your answer:
+
+# --- RETRIEVED LIBRARY BOOKS ---
+# {books_context if books_context else "No matching books cataloged."}
+ 
+# --- RETRIEVED PDF CONTENT PARTS ---
+# {chunks_context if chunks_context else "No PDF parts available."}
+ 
+# --- USER QUERY ---
+# {question}"""
+ 
+#         chat_history.append(
+#             types.Content(role="user", parts=[types.Part.from_text(text=user_prompt_content)])
+#         )
+ 
+#         response = gemini_client.models.generate_content(
+#             model="gemini-2.5-flash-lite",
+#             contents=chat_history,
+#             config=types.GenerateContentConfig(
+#                 system_instruction=system_instruction,
+#                 temperature=0.3,
+#                 max_output_tokens=350,
+#             )
+#         )
+#         answer = response.text
+ 
+#     except Exception as e:
+#         return jsonify({"error": f"LLM execution error: {str(e)}"}), 500
+ 
+#     return jsonify({
+#         "answer": answer,
+#         "books_found": books_found
+#     }), 200
 @app.route("/api/chatbot", methods=["POST"])
 @jwt_required()
 def chatbot():
@@ -2042,29 +2356,20 @@ def chatbot():
         body = ChatbotRequest(**request.json)
     except ValidationError:
         return jsonify({"error": "Invalid data format"}), 400
-
+ 
     question = body.question.strip()
     if not question:
-        return jsonify({"error": "Question empty hai"}), 400
-
-    # Step 0: Check if this is a "how many books" type question
-    count_keywords = [
-        "kitni books", "kitni kitabein", "total books", "how many books",
-        "books ki tadad", "library mein kitni", "kitne books"
-    ]
-    question_lower = question.lower()
-
-    if any(keyword in question_lower for keyword in count_keywords):
+        return jsonify({"error": "Question parameter is missing or blank"}), 400
+ 
+    # Handle catalog aggregation queries
+    count_keywords = ["kitni books", "kitni kitabein", "total books", "how many books", "books ki tadad", "library mein kitni", "kitne books"]
+    if any(k in question.lower() for k in count_keywords):
         try:
-            count_res = supabase.table("book").select("book_id, title, author", count="exact").execute()
-            total_books = count_res.count
-
-            # Build list of all book titles
+            count_res = supabase.table("book").select("book_id, title, author").execute()
+            total_books = len(count_res.data)
             book_titles = [book["title"] for book in count_res.data]
             titles_text = "\n".join([f"{i+1}. {title}" for i, title in enumerate(book_titles)])
-
-            answer = f"Hamari library mein abhi total {total_books} books available hain:\n\n{titles_text}"
-
+            answer = f"Our library currently features a total of {total_books} books:\n\n{titles_text}"
             return jsonify({
                 "answer": answer,
                 "books_found": count_res.data,
@@ -2072,133 +2377,120 @@ def chatbot():
             }), 200
         except Exception as e:
             return jsonify({"error": f"Count fetch failed: {str(e)}"}), 500
-
-    # Step 1: Generate question embedding
-    # Agar question mein "this", "it", "that" jaisi reference words hain
-    # toh pichli history se context nikal ke question ko enrich karo
-    reference_words = ["this book", "it", "that book", "this one", "the book", "iska", "is book", "woh book", "yeh book"]
-    question_for_embedding = question
-
-    if any(word in question.lower() for word in reference_words):
-        if body.conversation_history:
-            # Pichli history se last assistant message nikalo
-            last_context = ""
-            for msg in reversed(body.conversation_history):
-                if msg.role == "assistant":
-                    last_context = msg.content[:300]  # first 300 chars enough
-                    break
-            # Question ko enrich karo context ke saath
-            if last_context:
-                question_for_embedding = f"{question} {last_context}"
-
-    question_embedding = generate_embedding(question_for_embedding)
+ 
+    # STEP 1: Condense incoming conversational query
+    search_query = condense_query(question, body.conversation_history)
+ 
+    # Generate text vector embeddings for database matching
+    question_embedding = generate_embedding(search_query)
     if not question_embedding:
-        return jsonify({"error": "Embedding generate nahi hui"}), 500
+        return jsonify({"error": "Embedding initialization failed"}), 500
+ 
+    # STEP 2 & 3: Match Metadata & Chunks from Supabase with connection retry protections
+    similar_books = None
+    similar_chunks = None
 
-    # Step 2: Search books
     try:
-        similar_books = supabase.rpc("match_books", {
-            "query_embedding": question_embedding,
-            "match_count": 5
-        }).execute()
-    except Exception as e:
-        return jsonify({"error": f"Books search failed: {str(e)}"}), 500
+        similar_books = supabase.rpc("match_books", {"query_embedding": question_embedding, "match_count": 5}).execute()
+    except Exception as db_error:
+        print(f"Database book match socket dropped, retrying... Error: {db_error}")
+        try:
+            similar_books = supabase.rpc("match_books", {"query_embedding": question_embedding, "match_count": 5}).execute()
+        except Exception:
+            similar_books = None
 
-    # Step 3: Search in PDF chunks as well
     try:
-        similar_chunks = supabase.rpc("match_chunks", {
-            "query_embedding": question_embedding,
-            "match_count": 5
-        }).execute()
-    except:
-        similar_chunks = None
-
-    # Step 4: Build context
+        similar_chunks = supabase.rpc("match_chunks", {"query_embedding": question_embedding, "match_count": 5}).execute()
+    except Exception as db_error:
+        print(f"Database chunk match socket dropped, retrying... Error: {db_error}")
+        try:
+            similar_chunks = supabase.rpc("match_chunks", {"query_embedding": question_embedding, "match_count": 5}).execute()
+        except Exception:
+            similar_chunks = None
+ 
+    # STEP 4: Parse context payloads
     books_context = ""
     chunks_context = ""
     books_found = []
-
-    if similar_books.data:
+ 
+    # Balanced 0.4 matching threshold to capture deeper context lines like chapters
+    if similar_books and similar_books.data:
         for book in similar_books.data:
-            if book.get("similarity", 0) > 0.3:
-                books_context += f"""
-Book: {book.get('title', '')}
-Author: {book.get('author', '')}
-Description: {book.get('description', 'No description available')}
----"""
+            if book.get("similarity", 0) > 0.4:
+                books_context += f"\nBook: {book.get('title', '')}\nAuthor: {book.get('author', '')}\nDescription: {book.get('description', 'No description available')}\n---"
                 books_found.append({
                     "title": book.get("title"),
                     "author": book.get("author"),
                     "similarity": round(book.get("similarity", 0), 2)
                 })
-
+ 
     if similar_chunks and similar_chunks.data:
         for chunk in similar_chunks.data:
-            if chunk.get("similarity", 0) > 0.3:
-                chunks_context += f"""
-PDF Content:
-{chunk.get('chunk_text', '')}
----"""
-
-    # If no relevant content found
+            if chunk.get("similarity", 0) > 0.4:
+                chunks_context += f"\nPDF Content excerpt:\n{chunk.get('chunk_text', '')}\n---"
+ 
+    # Safe Fallback: Handle empty vector retrieval scenarios cleanly without throwing an error
     if not books_found and not chunks_context:
+        contextual_fallback = "I couldn't find the exact pages or chapter content inside my library database for this request. Please make sure the book PDF is fully indexed or try asking about the summary of the book."
         return jsonify({
-            "answer": "Is topic se related koi book hamare library database mein nahi mili. Koi aur topic try karein.",
+            "answer": contextual_fallback,
             "books_found": []
         }), 200
-
-    # Step 5: Generate answer using Groq LLM
-    try:
-        groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-
-        prompt = f"""You are a friendly library assistant. Answer only based on the books available in our library database.
-
-Rules:
-1. Write in clear, natural paragraphs — like a helpful conversation, not a list of facts
-2. If the user asks for a chapter or paragraph summary, answer using the PDF content
-3. If the user asks about a book in general, answer using its description
-4. For general knowledge not related to our library books, say: "This information is not available in our library database."
-5. Keep the tone warm and conversational, like ChatGPT or Claude would respond
-6. Do not mention similarity scores or technical details — just talk about the book naturally
-7. If the user says "this book", "it", "that book" or similar references, look at the conversation history to identify which book they are referring to and answer accordingly
-8. Keep your answer SHORT and CONCISE — maximum 3 to 4 lines only. Do not write long paragraphs.
-
-Library available books:
-{books_context}
-
-Books PDF related content:
-{chunks_context}
-
-User's question: {question}
-
-Answer in the same language as the user's question, in natural flowing text."""
-
-        response = groq_client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are a library chatbot. You only answer questions related to the books available in the database. For general knowledge questions, politely refuse and inform the user that you can only provide information about books in the library database."
-                },
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ],
-            max_tokens=1024,
-            temperature=0.5
+ 
+    # STEP 5: Compile message strings and process through Gemini 2.5 Flash Lite
+    gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+    chat_history = []
+    
+    for msg in body.conversation_history[-10:]:
+        chat_history.append(
+            types.Content(
+                role="user" if msg.role == "user" else "model",
+                parts=[types.Part.from_text(text=msg.content)]
+            )
         )
+ 
+    system_instruction = """You are a friendly library assistant chatbot named LibGenius.
+You must answer user questions using the extracted Library Books details and PDF contents provided.
+If the user asks about 'Chapter 1' or specific text details, extract it clearly from the PDF Content Excerpt. 
 
-        answer = response.choices[0].message.content
+FORMATTING RULES:
+- Always prioritize the structural format requested by the user (e.g., if they ask for points, list items, or a paragraph, follow that layout exactly).
+- Keep your total response concise and within a 3-4 line height equivalent, matching the same language as the user."""
 
-    except Exception as e:
-        return jsonify({"error": f"LLM error: {str(e)}"}), 500
+    user_prompt_content = f"""Here is the retrieved context from our library system to build your answer:
 
+--- RETRIEVED LIBRARY BOOKS ---
+{books_context if books_context else "No matching books cataloged."}
+ 
+--- RETRIEVED PDF CONTENT PARTS ---
+{chunks_context if chunks_context else "No PDF parts available."}
+ 
+--- USER QUERY ---
+{question}"""
+ 
+    chat_history.append(
+        types.Content(role="user", parts=[types.Part.from_text(text=user_prompt_content)])
+    )
+ 
+    try:
+        response = gemini_client.models.generate_content(
+            model="gemini-2.5-flash-lite",
+            contents=chat_history,
+            config=types.GenerateContentConfig(
+                system_instruction=system_instruction,
+                temperature=0.3,
+                max_output_tokens=350,
+            )
+        )
+        answer = response.text
+    except Exception as llm_error:
+        print(f"Gemini API Execution failed: {llm_error}")
+        return jsonify({"error": "The generation server is currently busy. Please wait a moment and try again."}), 503
+ 
     return jsonify({
         "answer": answer,
         "books_found": books_found
     }), 200
-
 
 if __name__ == "__main__":
     app.run(debug=True, port=8000)
