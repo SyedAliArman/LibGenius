@@ -73,23 +73,8 @@ CORS(
 # 1. FIREBASE ADMIN SDK INITIALIZATION
 # ==========================================================
 try:
-    # .env se alag alag values nikal kar khud dictionary banayein
-    private_key = os.getenv("FIREBASE_PRIVATE_KEY")
-    if private_key:
-        # \\n ko asli newline \n mein badlein taake Firebase key read kar sake
-        private_key = private_key.replace("\\n", "\n")
-
-    cred_dict = {
-        "type": "service_account",
-        "project_id": os.getenv("FIREBASE_PROJECT_ID"),
-        "private_key_id": os.getenv("FIREBASE_PRIVATE_KEY_ID"),
-        "private_key": private_key,
-        "client_email": os.getenv("FIREBASE_CLIENT_EMAIL"),
-        "token_uri": "https://oauth2.googleapis.com/token",
-    }
-
-    # Firebase initialize karein
-    cred = credentials.Certificate(cred_dict)
+    # Direct JSON file se credentials uthao, na env ka dukh na backslash ka rona
+    cred = credentials.Certificate("firebase_credentials.json")
     firebase_admin.initialize_app(cred)
     print("Firebase Initialized Successfully!")
 
