@@ -147,7 +147,7 @@ def save_fcm_token():
     # Ab aap body.fcm_token se direct data use kar sakte hain
     try:
         # Supabase ke table 'user' mein token update karein
-        res = supabase.table("users").update({"fcm_token": body.fcm_token}).eq("user_id", user_id).execute()
+        res = supabase.table("users").update({"fcm_token": body.fcm_token}).eq("cms_id", user_id).execute()
         
         return jsonify({"message": "Device FCM Token synced successfully on backend."}), 200
     except Exception as e:
@@ -1084,6 +1084,9 @@ def add_book():
         embedding = generate_embedding(embed_text)
     except Exception:
         embedding = None
+
+    # Extract dynamic fine details from admin form-data (default to 0 if not provided)
+    fine_per_day = float(request.form.get("fine_per_day", 0))
  
     # Book insert karo
     res = supabase.table("book").insert({
@@ -1100,7 +1103,8 @@ def add_book():
         "book_pdf_url": book_pdf_url,
         "book_cover_page": book_cover_page,
         "status": request.form.get("status", "Available"),
-        "embedding": embedding
+        "embedding": embedding,
+        "fine_per_day": fine_per_day
     }).execute()
  
     if not res.data:
@@ -1161,6 +1165,10 @@ def update_book(book_id):
  
     if request.form.get("quantity"):
         update_data["quantity"] = int(request.form.get("quantity"))
+
+    # Update fine details field dynamically if supplied in request metadata
+    if request.form.get("fine_per_day"):
+        update_data["fine_per_day"] = float(request.form.get("fine_per_day")) 
  
     # PDF update karo agar aayi hai
     if "book_pdf" in request.files:
@@ -1569,16 +1577,33 @@ def get_my_issued_books():
  
     user_id = user_res.data[0]["user_id"]
  
-    # Sirf currently issued books
-    res = supabase.table("issued_books").select("*, book(title, author, shelf_no, book_cover_page), fine(fine_amount, is_paid, fine_id)").eq("user_id", user_id).eq("status", "issued").execute()
+    # Fetch issued books with related book structure
+    res = supabase.table("issued_books").select("*, book(title, author, shelf_no, book_cover_page, fine_per_day), fine(fine_amount, is_paid, fine_id)").eq("user_id", user_id).eq("status", "issued").execute()
  
-    # Agar fine nahi lagi toh 0 bhejo
+    today = date.today()
     issued_books = []
+    
     for item in res.data:
+        due_date = date.fromisoformat(item["due_date"])
+        
+        # Automated calculated dynamic fine calculation
+        if today > due_date:
+            overdue_days = (today - due_date).days
+            # book dictionary se fine_per_day nikalen, fallback to 30 if missing/null
+            fine_rate = item.get("book", {}).get("fine_per_day") if item.get("book") else 30
+            if fine_rate is None:
+                fine_rate = 30
+            calculated_fine = overdue_days * fine_rate
+        else:
+            calculated_fine = 0
+            
+        # Update fine_amount directly inside issued_book profile object
+        item["fine_amount"] = calculated_fine
+
         fines = item.get("fine", [])
         item["fine"] = fines[0] if fines else {
             "fine_id": None,
-            "fine_amount": 0,
+            "fine_amount": calculated_fine,
             "is_paid": False
         }
         issued_books.append(item)
@@ -1588,7 +1613,6 @@ def get_my_issued_books():
         "total": len(issued_books),
         "issued_books": issued_books
     }), 200
- 
 
 # =========================
 # GET ALL ISSUED BOOKS WITH STUDENT DETAILS (ADMIN) (JWT♥)
@@ -1601,15 +1625,30 @@ def get_all_issued_books():
     if not identity.startswith("admin:"):
         return jsonify({"error": "Unauthorized"}), 403
  
-    res = supabase.table("issued_books").select("*, users(student_name, cms_id, email, campus, department, faculty, phone_no, date_of_birth, is_blocked, semester, user_id), book(title, author, shelf_no, book_cover_page), fine(fine_amount,is_paid, fine_id)").eq("status", "issued").execute()
+    res = supabase.table("issued_books").select("*, users(student_name, cms_id, email, campus, department, faculty, phone_no, date_of_birth, is_blocked, semester, user_id), book(title, author, shelf_no, book_cover_page, fine_per_day), fine(fine_amount, is_paid, fine_id)").eq("status", "issued").execute()
 
-    # Agar fine nahi lagi toh 0 bhejo
+    today = date.today()
     issued_books = []
+    
     for item in res.data:
+        due_date = date.fromisoformat(item["due_date"])
+        
+        # Automated calculated dynamic fine calculation
+        if today > due_date:
+            overdue_days = (today - due_date).days
+            fine_rate = item.get("book", {}).get("fine_per_day") if item.get("book") else 30
+            if fine_rate is None:
+                fine_rate = 30
+            calculated_fine = overdue_days * fine_rate
+        else:
+            calculated_fine = 0
+            
+        item["fine_amount"] = calculated_fine
+
         fines = item.get("fine", [])
         item["fine"] = fines[0] if fines else {
             "fine_id": None,
-            "fine_amount": 0,
+            "fine_amount": calculated_fine,
             "is_paid": False
         }
         issued_books.append(item)
@@ -1619,7 +1658,6 @@ def get_all_issued_books():
         "total": len(issued_books),
         "issued_books": issued_books
     }), 200
-
 
 # =========================
 # GET ALL REGISTERED STUDENTS (ADMIN) (JWT♥)
@@ -1845,15 +1883,15 @@ def return_book():
         return jsonify({"error": "No active issue found for this book"}), 404
  
     issue = issue_res.data[0]
-    issue_id = issue["issue_id"]  # issue_id ab issue se nikalega
+    issue_id = issue["issue_id"]
  
-    # Late return check karo
+    # Late return check karo (Sirf flag lagane ke liye)
     from datetime import date as date_type
     due_date = date_type.fromisoformat(issue["due_date"])
     return_date = datetime.now(timezone.utc)
-    is_late = return_date.date() > due_date  # boolean True ya False
+    is_late = return_date.date() > due_date
  
-    # Return record insert karo
+    # Return record insert karo (fine logging functionality removed from here)
     return_res = supabase.table("return_logs").insert({
         "issue_id": issue_id,
         "book_id": book_id,
@@ -1864,30 +1902,6 @@ def return_book():
     }).execute()
  
     return_id = return_res.data[0]["return_id"]
-    fine_id = None
-    fine_amount = 0
- 
-    # Agar late return hai toh fine create karo
-    if is_late:
-        overdue_days = (return_date.date() - due_date).days
-        fine_amount = overdue_days * 30  # 30 rupees per day
- 
-        fine_res = supabase.table("fine").insert({
-            "user_id": user_id,
-            "issue_id": issue_id,
-            "return_id": return_id,
-            "fine_amount": fine_amount,
-            "fine_date": return_date.date().isoformat(),
-            "is_paid": False,
-            "paid_date": None
-        }).execute()
- 
-        fine_id = fine_res.data[0]["fine_id"]
- 
-        # Return record mein fine_id link karo
-        supabase.table("return_logs").update({
-            "fine_id": fine_id
-        }).eq("return_id", return_id).execute()
  
     # Issued books status update karo
     supabase.table("issued_books").update({
@@ -1908,12 +1922,10 @@ def return_book():
         "book_id": book_id,
         "return_date": return_date.date().isoformat(),
         "late_return": is_late,
-        "fine_amount": fine_amount,
         "return_id": return_id,
         "user_id": user_id,
         "issue_id": issue_id
     }), 200
- 
 
 # =========================
 # GET RETURNED BOOKS HISTORY (ADMIN) (JWT♥)
@@ -2027,6 +2039,59 @@ def drop_book():
         "return_id": return_id,
         "category_id": book["category_id"]
     }), 200
+
+# =========================
+# Remainder for over due books
+# =========================
+
+@app.route("/api/cron/send-due-reminders", methods=["GET"])
+def send_due_reminders():
+    # 1. Kal ki date nikaalyein (Target Date)
+    tomorrow = (datetime.now(timezone.utc) + timedelta(days=1)).date().isoformat()
+    
+    try:
+        # 2. 'issued_books' table se woh records nikalein jinki due_date KAL hai aur status STILL 'issued' hai
+        due_books = supabase.table("issued_books")\
+            .select("user_id, book_id, due_date")\
+            .eq("due_date", tomorrow)\
+            .eq("status", "issued")\
+            .execute()
+            
+        if not due_books.data:
+            return jsonify({"message": "No books are due tomorrow. Notification skipped."}), 200
+
+        sent_count = 0
+        
+        # 3. Loop chalayein har record par aur notification bhejein
+        for record in due_books.data:
+            user_id = record["user_id"]
+            book_id = record["book_id"]
+            
+            # User ka FCM Token aur Name nikalein
+            user_res = supabase.table("users").select("student_name", "fcm_token").eq("user_id", user_id).execute()
+            # Book ka Title nikalein
+            book_res = supabase.table("book").select("title").eq("book_id", book_id).execute()
+            
+            if user_res.data and book_res.data:
+                user_data = user_res.data[0]
+                book_title = book_res.data[0].get("title", "Library Book")
+                user_fcm_token = user_data.get("fcm_token")
+                student_name = user_data.get("student_name")
+                
+                # Agar user ka FCM token database mein majood hai
+                if user_fcm_token:
+                    notif_title = "🚨 Library Return Reminder!"
+                    notif_body = f"Hi {student_name}, your issued book '{book_title}' is due tomorrow ({tomorrow}). Please return it to avoid late fees."
+                    
+                    # Firebase function trigger kiya
+                    send_fcm_notification(fcm_token=user_fcm_token, title=notif_title, body=notif_body)
+                    sent_count += 1
+
+        return jsonify({"message": f"Successfully sent {sent_count} reminder notifications."}), 200
+
+    except Exception as e:
+        print(f"CRON ERROR: {str(e)}")
+        return jsonify({"error": f"Failed to process reminders: {str(e)}"}), 500
 
 
 # =========================
@@ -2189,63 +2254,6 @@ def split_into_chunks(text, chunk_size=500):
             chunks.append(chunk)
     return chunks
 
-def process_book_pdf(book_id, pdf_url):
-    """Process book PDF in background"""
-    try:
-        text = extract_text_from_pdf_url(pdf_url)
-        if not text:
-            print(f"PDF text not found for book_id: {book_id}")
-            return False
-
-        chunks = split_into_chunks(text, chunk_size=500)
-        print(f"Total chunks: {len(chunks)} for book_id: {book_id}")
-
-        # Purane chunks delete karo
-        supabase.table("book_chunks").delete().eq("book_id", book_id).execute()
-
-        # Har chunk ki embedding banao aur save karo
-        for index, chunk in enumerate(chunks):
-            embedding = generate_embedding(chunk)
-            if embedding:
-                supabase.table("book_chunks").insert({
-                    "book_id": book_id,
-                    "chunk_text": chunk,
-                    "chunk_index": index,
-                    "embedding": embedding
-                }).execute()
-            print(f"Chunk {index + 1}/{len(chunks)} saved")
-
-        print(f"PDF processing complete for book_id: {book_id}")
-        return True
-
-    except Exception as e:
-        print(f"PDF processing error: {str(e)}")
-        return False
-
-# ==================================================================================================
-# PDF CHUNKING HELPER FUNCTIONS
-# ==================================================================================================
-def extract_text_from_pdf_url(pdf_url):
-    try:
-        response = requests.get(pdf_url, timeout=30)
-        pdf_file = io.BytesIO(response.content)
-        reader = PyPDF2.PdfReader(pdf_file)
-        text = ""
-        for page in reader.pages:
-            text += page.extract_text() or ""
-        return text
-    except Exception as e:
-        print(f"PDF extract error: {str(e)}")
-        return None
-
-def split_into_chunks(text, chunk_size=500):
-    words = text.split()
-    chunks = []
-    for i in range(0, len(words), chunk_size):
-        chunk = " ".join(words[i:i + chunk_size])
-        if chunk.strip():
-            chunks.append(chunk)
-    return chunks
 
 def process_book_pdf(book_id, pdf_url):
     try:
@@ -2331,139 +2339,10 @@ class ChatbotRequest(BaseModel):
     question: str
     conversation_history: list[ChatbotMessage] = []
  
-# @app.route("/api/chatbot", methods=["POST"])
-# @jwt_required()
-# def chatbot():
-#     try:
-#         body = ChatbotRequest(**request.json)
-#     except ValidationError:
-#         return jsonify({"error": "Invalid data format"}), 400
- 
-#     question = body.question.strip()
-#     if not question:
-#         return jsonify({"error": "Question parameter is missing or blank"}), 400
- 
-#     # Step 0: Handle catalog aggregations
-#     count_keywords = ["kitni books", "kitni kitabein", "total books", "how many books", "books ki tadad", "library mein kitni", "kitne books"]
-#     if any(k in question.lower() for k in count_keywords):
-#         try:
-#             count_res = supabase.table("book").select("book_id, title, author").execute()
-#             total_books = len(count_res.data)
-#             book_titles = [book["title"] for book in count_res.data]
-#             titles_text = "\n".join([f"{i+1}. {title}" for i, title in enumerate(book_titles)])
-#             answer = f"Our library currently features a total of {total_books} books:\n\n{titles_text}"
-#             return jsonify({
-#                 "answer": answer,
-#                 "books_found": count_res.data,
-#                 "total_books": total_books
-#             }), 200
-#         except Exception as e:
-#             return jsonify({"error": f"Count fetch failed: {str(e)}"}), 500
- 
-#     # ✨ STEP 1: CONDENSE QUERY (Rewriting pronouns 'it', 'this book', etc.)
-#     # We call our new helper here to replace your old manual string-appending logic.
-#     search_query = condense_query(question, body.conversation_history)
- 
-#     # Pass 'search_query' into your model to get a hyper-focused vector embedding
-#     question_embedding = generate_embedding(search_query)
-#     if not question_embedding:
-#         return jsonify({"error": "Embedding initialization failed"}), 500
- 
-#     # Step 2 & 3: Match Metadata & Chunks from Supabase Vector Storage
-#     try:
-#         similar_books = supabase.rpc("match_books", {"query_embedding": question_embedding, "match_count": 5}).execute()
-#     except Exception as e:
-#         return jsonify({"error": f"Books vector match failed: {str(e)}"}), 500
- 
-#     try:
-#         similar_chunks = supabase.rpc("match_chunks", {"query_embedding": question_embedding, "match_count": 5}).execute()
-#     except:
-#         similar_chunks = None
- 
-#     # Step 4: Map Retrieval Context payloads
-#     books_context = ""
-#     chunks_context = ""
-#     books_found = []
- 
-#     if similar_books.data:
-#         for book in similar_books.data:
-#             if book.get("similarity", 0) > 0.5:
-#                 books_context += f"\nBook: {book.get('title', '')}\nAuthor: {book.get('author', '')}\nDescription: {book.get('description', 'No description available')}\n---"
-#                 books_found.append({
-#                     "title": book.get("title"),
-#                     "author": book.get("author"),
-#                     "similarity": round(book.get("similarity", 0), 2)
-#                 })
- 
-#     if similar_chunks and similar_chunks.data:
-#         for chunk in similar_chunks.data:
-#             if chunk.get("similarity", 0) > 0.3:
-#                 chunks_context += f"\nPDF Content excerpt:\n{chunk.get('chunk_text', '')}\n---"
- 
-#     # Strictly isolate answering paths from generic non-library context
-#     if not books_found and not chunks_context:
-#         return jsonify({
-#             "answer": "No book found related to this topic in our library database. Please try another topic.",
-#             "books_found": []
-#         }), 200
- 
-#     # Step 5: Process safely through Gemini 2.5 Flash SDK
-#     try:
-#         gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
- 
-#         # Map conversation history safely using Content types
-#         chat_history = []
-#         for msg in body.conversation_history[-10:]:
-#             chat_history.append(
-#                 types.Content(
-#                     role="user" if msg.role == "user" else "model",
-#                     parts=[types.Part.from_text(text=msg.content)]
-#                 )
-#             )
- 
-#         system_instruction = """You are a friendly library assistant chatbot named LibGenius.
-# You must answer user questions ONLY using the extracted Library Books details and PDF contents provided in the user message prompt.
+# =========================
+# CHATBOT API (JWT)
+# =========================
 
-# CRITICAL INSTRUCTIONS:
-# 1. Grounding: If specific PDF content parts are missing but the book exists in the catalog context, provide a brief high-level summary of that book if you know it, otherwise use the fallback message.
-# 2. Multi-turn Resolution: If the user requests generic attributes or names ("who is the character?", "summarize it"), look at the conversation history to verify which book they are targeting.
-# 3. Length Constraints: Keep your responses highly concise—maximum of 3 to 4 lines only. Do not output raw markdown lists unless necessary.
-# 4. Language Match: Automatically match the user's input language (English, Urdu/Roman-Urdu, etc.).
-# 5. Technical Blindness: Never output internal metrics like similarity scores or database indices."""
-
-#         user_prompt_content = f"""Here is the retrieved context from our library system to build your answer:
-
-# --- RETRIEVED LIBRARY BOOKS ---
-# {books_context if books_context else "No matching books cataloged."}
- 
-# --- RETRIEVED PDF CONTENT PARTS ---
-# {chunks_context if chunks_context else "No PDF parts available."}
- 
-# --- USER QUERY ---
-# {question}"""
- 
-#         chat_history.append(
-#             types.Content(role="user", parts=[types.Part.from_text(text=user_prompt_content)])
-#         )
- 
-#         response = gemini_client.models.generate_content(
-#             model="gemini-2.5-flash-lite",
-#             contents=chat_history,
-#             config=types.GenerateContentConfig(
-#                 system_instruction=system_instruction,
-#                 temperature=0.3,
-#                 max_output_tokens=350,
-#             )
-#         )
-#         answer = response.text
- 
-#     except Exception as e:
-#         return jsonify({"error": f"LLM execution error: {str(e)}"}), 500
- 
-#     return jsonify({
-#         "answer": answer,
-#         "books_found": books_found
-#     }), 200
 @app.route("/api/chatbot", methods=["POST"])
 @jwt_required()
 def chatbot():
@@ -2606,6 +2485,31 @@ FORMATTING RULES:
         "answer": answer,
         "books_found": books_found
     }), 200
+
+
+
+# ==================================================
+# REMINDER ROUTES
+# ==================================================
+def trigger_reminders_locally():
+    print("⏰ Local Scheduler: Checking for due books...")
+    url = "http://127.0.0.1:8000/api/cron/send-due-reminders"
+    headers = {"CRON_SECRET_KEY": "d407b301451a238c52b0ba50603b400c8aec321f3b373943"} # Aapki secret key
+    
+    try:
+        # Yeh aapke hi endpoint ko hit karega background mein
+        response = requests.get(url, headers=headers)
+        print(f"Scheduler Response: {response.json()}")
+    except Exception as e:
+        print(f"Scheduler failed: {e}")
+
+# Scheduler ko initialize karein aur start karein
+scheduler = BackgroundScheduler()
+
+# REAL-WORLD KE LIYE: Roz raat 12 baje chalane ke liye (Isko testing ke baad open karein):
+scheduler.add_job(func=trigger_reminders_locally, trigger="cron", hour=0, minute=0)
+
+scheduler.start()    
 
 if __name__ == "__main__":
     app.run(debug=True, port=8000)
