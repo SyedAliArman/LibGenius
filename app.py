@@ -1583,15 +1583,14 @@ def issue_book():
 def get_my_issued_books():
     cms_id = get_jwt_identity()
  
-    # cms_id se user_id nikalo
     user_res = supabase.table("users").select("user_id", "student_name").eq("cms_id", cms_id).execute()
     if not user_res.data:
         return jsonify({"error": "User not found"}), 404
  
     user_id = user_res.data[0]["user_id"]
  
-    # Fetch issued books with related book structure
-    res = supabase.table("issued_books").select("*, book(title, author, shelf_no, book_cover_page, fine_per_day), fine(fine_amount, is_paid, fine_id)").eq("user_id", user_id).eq("status", "issued").execute()
+    # 1. Fetch issued books with fine relationship
+    res = supabase.table("issued_books").select("*, book(title, author, shelf_no, book_cover_page, fine_per_day), fine!fine_issue_id_fkey(fine_amount, is_paid, fine_id)").eq("user_id", user_id).eq("status", "issued").execute()
  
     today = date.today()
     issued_books = []
@@ -1599,33 +1598,59 @@ def get_my_issued_books():
     for item in res.data:
         due_date = date.fromisoformat(item["due_date"])
         
-        # Automated calculated dynamic fine calculation
+        # Live Overdue Fine Calculate karein
         if today > due_date:
             overdue_days = (today - due_date).days
-            # book dictionary se fine_per_day nikalen, fallback to 30 if missing/null
             fine_rate = item.get("book", {}).get("fine_per_day") if item.get("book") else 30
             if fine_rate is None:
                 fine_rate = 30
             calculated_fine = overdue_days * fine_rate
         else:
             calculated_fine = 0
-            
-        # Update fine_amount directly inside issued_book profile object
-        item["fine_amount"] = calculated_fine
 
-        fines = item.get("fine", [])
-        item["fine"] = fines[0] if fines else {
-            "fine_id": None,
-            "fine_amount": calculated_fine,
-            "is_paid": False
-        }
+        # Fine table se details extract karo (Dynamic check)
+        fines_list = item.get("fine") or item.get("fine!fine_issue_id_fkey") or []
+        
+        extracted_fine_id = None
+        is_paid_status = False
+        final_fine_table_amount = calculated_fine
+
+        if isinstance(fines_list, list) and len(fines_list) > 0:
+            fine_record = fines_list[-1]
+            extracted_fine_id = fine_record.get("fine_id")
+            db_fine = fine_record.get("fine_amount", 0)
+            final_fine_table_amount = db_fine if db_fine > 0 else calculated_fine
+            is_paid_status = fine_record.get("is_paid", False)
+
+        # 2. 🔥 JADU: Yahan hum issued_books table ko database mein UPDATE kar rahe hain!
+        try:
+            supabase.table("issued_books").update({
+                "fine_id": extracted_fine_id,
+                "fine_table_amount": final_fine_table_amount,
+                "fine_amount": calculated_fine
+            }).eq("issue_id", item["issue_id"]).execute()
+        except Exception as db_err:
+            print(f"Database sync failed for issue_id {item['issue_id']}: {str(db_err)}")
+
+        # Local JSON dictionary properties update karein response ke liye
+        item["fine_id"] = extracted_fine_id
+        item["fine_table_amount"] = final_fine_table_amount
+        item["fine_amount"] = calculated_fine
+        item["is_paid"] = is_paid_status
+
+        # Nested kachra response se remove karne ke liye
+        keys_to_delete = [k for k in item.keys() if "fine" in k and k not in ["fine_amount", "fine_id", "fine_table_amount"]]
+        for k in keys_to_delete:
+            item.pop(k, None)
+
         issued_books.append(item)
  
     return jsonify({
-        "message": "Issued books fetched successfully",
+        "message": "Issued books fetched and database updated successfully",
         "total": len(issued_books),
         "issued_books": issued_books
     }), 200
+
 
 # =========================
 # GET ALL ISSUED BOOKS WITH STUDENT DETAILS (ADMIN) (JWT♥)
@@ -1638,15 +1663,15 @@ def get_all_issued_books():
     if not identity.startswith("admin:"):
         return jsonify({"error": "Unauthorized"}), 403
  
-    res = supabase.table("issued_books").select("*, users(student_name, cms_id, email, campus, department, faculty, phone_no, date_of_birth, is_blocked, semester, user_id), book(title, author, shelf_no, book_cover_page, fine_per_day), fine(fine_amount, is_paid, fine_id)").eq("status", "issued").execute()
+    # Fetch data along with relations
+    res = supabase.table("issued_books").select("*, users(student_name, cms_id, email, campus, department, faculty, phone_no, date_of_birth, is_blocked, semester, user_id), book(title, author, shelf_no, book_cover_page, fine_per_day), fine!fine_issue_id_fkey(fine_amount, is_paid, fine_id)").eq("status", "issued").execute()
 
     today = date.today()
-    issued_books = []
+    final_output = []
     
     for item in res.data:
+        # 1. Live Overdue Fine Calculate karein
         due_date = date.fromisoformat(item["due_date"])
-        
-        # Automated calculated dynamic fine calculation
         if today > due_date:
             overdue_days = (today - due_date).days
             fine_rate = item.get("book", {}).get("fine_per_day") if item.get("book") else 30
@@ -1656,22 +1681,54 @@ def get_all_issued_books():
         else:
             calculated_fine = 0
             
-        item["fine_amount"] = calculated_fine
+        # 2. Dynamic key scanning (Fine table se details nikalne ke liye)
+        fines_list = []
+        for key in item.keys():
+            if "fine" in key and isinstance(item[key], list):
+                fines_list = item[key]
+                break
+        
+        extracted_fine_id = None
+        is_paid_status = False
+        final_fine_table_amount = calculated_fine
 
-        fines = item.get("fine", [])
-        item["fine"] = fines[0] if fines else {
-            "fine_id": None,
-            "fine_amount": calculated_fine,
-            "is_paid": False
-        }
-        issued_books.append(item)
+        if fines_list and len(fines_list) > 0:
+            fine_record = fines_list[-1]  # Latest fine record array se uthao
+            extracted_fine_id = fine_record.get("fine_id")
+            db_fine = fine_record.get("fine_amount", 0)
+            final_fine_table_amount = db_fine if db_fine > 0 else calculated_fine
+            is_paid_status = fine_record.get("is_paid", False)
+
+        # 3. 🔥 DATABASE SYNC: Yahan issued_books table permanent update hoga
+        try:
+            supabase.table("issued_books").update({
+                "fine_id": extracted_fine_id,
+                "fine_table_amount": final_fine_table_amount,
+                "fine_amount": calculated_fine
+            }).eq("issue_id", item["issue_id"]).execute()
+        except Exception as db_err:
+            print(f"Admin API database sync failed for issue_id {item['issue_id']}: {str(db_err)}")
+
+        # Local properties update for JSON response
+        item["fine_id"] = extracted_fine_id
+        item["fine_table_amount"] = final_fine_table_amount
+        item["fine_amount"] = calculated_fine
+        item["is_paid"] = is_paid_status
+
+        # 4. CLEANUP: Extra nested kachra clean karne ke liye
+        keys_to_delete = [k for k in item.keys() if "fine" in k and k not in ["fine_amount", "fine_id", "fine_table_amount"]]
+        for k in keys_to_delete:
+            item.pop(k, None)
+
+        final_output.append(item)
 
     return jsonify({
-        "message": "All issued books fetched successfully",
-        "total": len(issued_books),
-        "issued_books": issued_books
+        "message": "All issued books fetched and database updated successfully",
+        "total": len(final_output),
+        "issued_books": final_output
     }), 200
 
+    
 # =========================
 # GET ALL REGISTERED STUDENTS (ADMIN) (JWT♥)
 # Admin get all students data
@@ -2259,7 +2316,7 @@ def unblock_user():
 # =========================
 class UpdateFineRequest(BaseModel):
     fine_id: str
-    amount: float 
+    fine_amount: float 
  
 
 @app.route("/api/admin/update-fine", methods=["PUT"])
