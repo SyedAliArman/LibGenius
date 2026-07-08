@@ -59,15 +59,12 @@ CORS(
         r"/api/*": {
             "origins": [
                 "http://localhost:3000",
-                "https://libgenius.netlify.app"
+                
             ]
         }
     },
-    supports_credentials=True,
-    allow_headers=["Content-Type", "Authorization"],
-    methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+    supports_credentials=True
 )
-
 
 # ==========================================================
 # 1. FIREBASE ADMIN SDK INITIALIZATION
