@@ -1468,7 +1468,7 @@ def get_book_reviews(book_id):
 class IssueBookRequest(BaseModel):
     cms_id: str
     book_id: int
- 
+
 @app.route("/api/admin/issue-book", methods=["POST"])
 @jwt_required()
 def issue_book():
@@ -1517,7 +1517,7 @@ def issue_book():
     issue_date = datetime.now(timezone.utc).date().isoformat()
     due_date = (datetime.now(timezone.utc) + timedelta(days=14)).date().isoformat()
 
-    # 🌟 UPDATED: Added 'fine_table_amount': 0 during raw insert phase
+    # 1. Sabse pehle entry insert karo
     res = supabase.table("issued_books").insert({
         "user_id": user_id,
         "cms_id": body.cms_id,
@@ -1526,7 +1526,7 @@ def issue_book():
         "due_date": due_date,
         "status": "issued",
         "fine_amount": 0,
-        "fine_table_amount": 0  # Naya column initialized
+        "fine_table_amount": 0  # Initial baseline state
     }).execute()
 
     new_issue_id = res.data[0]["issue_id"]
@@ -1539,14 +1539,22 @@ def issue_book():
         "status": new_status
     }).eq("book_id", book_id).execute()
 
-    # Fine table se fine amount check karo agar koi fine lagi hai (Safe check mapping)
+    # 🔍 2. FINE TABLE JOIN & SYNC LOGIC (Jo aap keh rahe ho)
+    # Fine table se fine_amount check karo ki kya is issue_id par pehle se koi fine record exist karta hai
     fine_res = supabase.table("fine").select("fine_amount").eq("issue_id", new_issue_id).eq("is_paid", False).execute()
     fine_amount = fine_res.data[0]["fine_amount"] if fine_res.data else 0
 
-    # 🌟 BONUS TIP FOR FUTURE SYNC: 
-    # Agar kabhi future mei fine lagne par issued_books ko update bhi karna pade, 
-    # toh background cron scheduler ya manual add API ke andar ye query chalani hogi:
-    # supabase.table("issued_books").update({"fine_table_amount": fine_amount}).eq("issue_id", new_issue_id).execute()
+    # 🌟 3. REAL-TIME UPDATE BACK TO ISSUED_BOOKS
+    # Agar fine_amount zero se zyada milti hai, toh usey 'fine_table_amount' column mein usi waqt save/update karo!
+    if fine_amount > 0:
+        updated_issue_res = supabase.table("issued_books").update({
+            "fine_table_amount": fine_amount
+        }).eq("issue_id", new_issue_id).execute()
+        
+        # Latest updated record return object mein map karne ke liye
+        issue_data_to_return = updated_issue_res.data[0]
+    else:
+        issue_data_to_return = res.data[0]
 
     # ==========================================================
     # 🌟 AUTOMATIC PUSH NOTIFICATION TRIGGER
@@ -1561,12 +1569,11 @@ def issue_book():
 
     return jsonify({
         "message": "Book issued successfully",
-        "issue": res.data[0],
+        "issue": issue_data_to_return, # Isme ab 'fine_table_amount' full updated milega!
         "due_date": due_date,
-        "fine_amount": fine_amount  # Keeps endpoint response contract consistent
+        "fine_amount": fine_amount
     }), 201
 
-    
 # =========================
 # GET CURRENTLY ISSUED BOOKS BY USER (USER) (JWT♥)
 # Only logged in user sees own issued books
