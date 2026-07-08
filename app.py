@@ -2315,15 +2315,13 @@ def unblock_user():
 # Admin can update fine
 # =========================
 class UpdateFineRequest(BaseModel):
-    fine_id: str
-    fine_amount: float 
- 
+    fine_id: int
+    fine_amount: float
 
 @app.route("/api/admin/update-fine", methods=["PUT"])
 @jwt_required()
 def update_fine():
     identity = get_jwt_identity()
-
     if not identity.startswith("admin:"):
         return jsonify({"error": "Unauthorized"}), 403
 
@@ -2336,17 +2334,14 @@ def update_fine():
         }), 400
 
     # Check fine exists
-    fine_res = supabase.table("fine").select("*").eq(
-        "fine_id", body.fine_id
-    ).execute()
-
+    fine_res = supabase.table("fine").select("*").eq("fine_id", body.fine_id).execute()
     if not fine_res.data:
         return jsonify({"error": "Fine not found"}), 404
 
-    fine = fine_res.data[0]
+    fine_data = fine_res.data[0]
 
     # Don't allow updating paid fines
-    if fine["is_paid"]:
+    if fine_data["is_paid"]:
         return jsonify({
             "error": "Cannot update an already paid fine"
         }), 400
@@ -2357,16 +2352,28 @@ def update_fine():
             "error": "Fine amount cannot be negative"
         }), 400
 
-    # Update fine
+    # 2. Update Fine Table
     update_res = supabase.table("fine").update({
         "fine_amount": body.fine_amount,
         "fine_date": datetime.now(timezone.utc).date().isoformat()
     }).eq("fine_id", body.fine_id).execute()
 
+    # 3. 🔥 CRITICAL FIX: issued_books table ko bhi usi waqt update karo!
+    # Fine record se 'issue_id' uthao jo humne link kiya hua hai
+    linked_issue_id = fine_data.get("issue_id")
+    if linked_issue_id:
+        try:
+            supabase.table("issued_books").update({
+                "fine_table_amount": body.fine_amount,
+                "fine_amount": body.fine_amount
+            }).eq("issue_id", linked_issue_id).execute()
+        except Exception as sync_err:
+            print(f"Syncing to issued_books failed: {str(sync_err)}")
+
     return jsonify({
-        "message": "Fine updated successfully",
+        "message": "Fine updated successfully and synced with issued books",
         "fine": update_res.data[0]
-    }), 200 
+    }), 200
 
 
  # ==================================================================================================
