@@ -53,6 +53,21 @@ if os.getenv("HF_TOKEN"):
 
 app = Flask(__name__)
 
+# CORS(
+#     app,
+#     resources={
+#         r"/api/*": {
+#             "origins": [
+#                 "http://localhost:3000",
+#                 "https://libgenius.netlify.app"
+#             ]
+#         }
+#     },
+#     supports_credentials=True,
+#     allow_headers=["Content-Type", "Authorization"],
+#     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+# )
+
 CORS(
     app,
     resources={
@@ -64,7 +79,7 @@ CORS(
         }
     },
     supports_credentials=True,
-    allow_headers=["Content-Type", "Authorization"],
+    allow_headers=["Content-Type", "Authorization", "ngrok-skip-browser-warning"],
     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"]
 )
 
@@ -1745,6 +1760,63 @@ def mark_fine_paid():
         "message": "Fine marked as paid successfully",
         "fine": res.data[0]
     }), 200 
+
+
+# --------------------------------------------------------------------------------------------------
+# 5. ADD MANUAL FINE BY CMS_ID (ADMIN ONLY) - Triggered via Web Panel Button
+# --------------------------------------------------------------------------------------------------
+class AddManualFineRequest(BaseModel):
+    cms_id: str                   # user_id ki jagah ab cms_id use hoga
+    issue_id: Optional[int] = None 
+    fine_amount: float
+
+@app.route("/api/admin/add-fine", methods=["POST"])
+@jwt_required()
+def add_manual_fine():
+    identity = get_jwt_identity()
+    if not identity.startswith("admin:"):
+        return jsonify({"error": "Unauthorized! Admin privilege required."}), 403
+
+    try:
+        body = AddManualFineRequest(**request.json)
+    except ValidationError as e:
+        return jsonify({"error": "Invalid input format", "details": e.errors()}), 400
+
+    if body.fine_amount <= 0:
+        return jsonify({"error": "Fine amount must be greater than zero."}), 400
+
+    try:
+        # 🔍 Step 1: Users table se user_id (UUID) nikal lo validation ke liye
+        user_res = supabase.table("users").select("user_id").eq("cms_id", body.cms_id).execute()
+        
+        if not user_res.data:
+            return jsonify({"error": f"No student found with CMS ID: {body.cms_id}"}), 404
+
+        real_user_id = user_res.data[0]["user_id"]
+
+        # Fine payload with your newly planned 'cms_id' column
+        fine_payload = {
+            "user_id": str(real_user_id),       # Table core foreign key (UUID)
+            "cms_id": str(body.cms_id),         # 🌟 Naya column jo aap fine table mein add kar rahe ho
+            "issue_id": body.issue_id if body.issue_id else None,
+            "return_id": None,
+            "fine_amount": body.fine_amount,
+            "fine_date": datetime.now(timezone.utc).date().isoformat(),
+            "is_paid": False,
+            "paid_date": None
+        }
+
+        # Insert into Supabase fine table
+        res = supabase.table("fine").insert(fine_payload).execute()
+
+        return jsonify({
+            "message": f"Fine imposed successfully on Student (CMS ID: {body.cms_id}).",
+            "fine": res.data[0]
+        }), 201
+
+    except Exception as e:
+        return jsonify({"error": f"Failed to execute manual fine tracking: {str(e)}"}), 500
+        
 
 
 # =========================
