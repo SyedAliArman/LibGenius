@@ -1489,7 +1489,7 @@ def issue_book():
         return jsonify({"error": "User not found"}), 404
 
     user_id = user_check.data[0]["user_id"]
-    user_fcm_token = user_check.data[0].get("fcm_token") # 🌟 FCM Token yahan mil gaya
+    user_fcm_token = user_check.data[0].get("fcm_token")
 
     # Check book exists or not
     book_check = supabase.table("book").select("*").eq("book_id", book_id).execute()
@@ -1497,7 +1497,7 @@ def issue_book():
         return jsonify({"error": "Book not found"}), 404
 
     book = book_check.data[0]
-    book_title = book.get("title", "Library Book") # 🌟 Title notification ke liye save kiya
+    book_title = book.get("title", "Library Book")
 
     # Check book is available or not
     if book["quantity"] <= 0 or book["status"].lower() != "available":
@@ -1517,6 +1517,7 @@ def issue_book():
     issue_date = datetime.now(timezone.utc).date().isoformat()
     due_date = (datetime.now(timezone.utc) + timedelta(days=14)).date().isoformat()
 
+    # 🌟 UPDATED: Added 'fine_table_amount': 0 during raw insert phase
     res = supabase.table("issued_books").insert({
         "user_id": user_id,
         "cms_id": body.cms_id,
@@ -1524,8 +1525,11 @@ def issue_book():
         "issue_date": issue_date,
         "due_date": due_date,
         "status": "issued",
-        "fine_amount": 0
+        "fine_amount": 0,
+        "fine_table_amount": 0  # Naya column initialized
     }).execute()
+
+    new_issue_id = res.data[0]["issue_id"]
 
     # Decrease book quantity
     new_quantity = book["quantity"] - 1
@@ -1535,19 +1539,21 @@ def issue_book():
         "status": new_status
     }).eq("book_id", book_id).execute()
 
-    # Fine table se fine amount check karo agar koi fine lagi hai
-    fine_res = supabase.table("fine").select("fine_amount, is_paid").eq("issue_id", res.data[0]["issue_id"]).eq("is_paid", False).execute()
+    # Fine table se fine amount check karo agar koi fine lagi hai (Safe check mapping)
+    fine_res = supabase.table("fine").select("fine_amount").eq("issue_id", new_issue_id).eq("is_paid", False).execute()
     fine_amount = fine_res.data[0]["fine_amount"] if fine_res.data else 0
+
+    # 🌟 BONUS TIP FOR FUTURE SYNC: 
+    # Agar kabhi future mei fine lagne par issued_books ko update bhi karna pade, 
+    # toh background cron scheduler ya manual add API ke andar ye query chalani hogi:
+    # supabase.table("issued_books").update({"fine_table_amount": fine_amount}).eq("issue_id", new_issue_id).execute()
 
     # ==========================================================
     # 🌟 AUTOMATIC PUSH NOTIFICATION TRIGGER
     # ==========================================================
     if user_fcm_token:
-        # Pyaara sa dynamic notification alert string
         notif_title = "Book Issued Successfully! 📚"
         notif_body = f"Hi {user_check.data[0]['student_name']}, '{book_title}' has been issued to your account. Please return it before {due_date}."
-        
-        # Firebase helper function execute kiya
         send_fcm_notification(fcm_token=user_fcm_token, title=notif_title, body=notif_body)
     else:
         print(f"Notification skipped: No FCM Token registered for CMS ID {body.cms_id}")
@@ -1557,9 +1563,10 @@ def issue_book():
         "message": "Book issued successfully",
         "issue": res.data[0],
         "due_date": due_date,
-        "fine_amount": fine_amount
+        "fine_amount": fine_amount  # Keeps endpoint response contract consistent
     }), 201
- 
+
+    
 # =========================
 # GET CURRENTLY ISSUED BOOKS BY USER (USER) (JWT♥)
 # Only logged in user sees own issued books
@@ -1770,6 +1777,9 @@ class AddManualFineRequest(BaseModel):
     issue_id: Optional[int] = None 
     fine_amount: float
 
+# --------------------------------------------------------------------------------------------------
+# 5. ADD MANUAL FINE BY CMS_ID (ADMIN ONLY) - Duplicate Issue Check Included
+# --------------------------------------------------------------------------------------------------
 @app.route("/api/admin/add-fine", methods=["POST"])
 @jwt_required()
 def add_manual_fine():
@@ -1794,10 +1804,24 @@ def add_manual_fine():
 
         real_user_id = user_res.data[0]["user_id"]
 
+        # 🌟 Step 2: DUPLICATE CHECK (Sirf tab jab issue_id provide ki gayi ho)
+        if body.issue_id:
+            # Check karo ki kya is issue_id par koi aisa fine hai jo abhi tak pay (is_paid = False) nahi hua
+            existing_fine = supabase.table("fine")\
+                .select("fine_id")\
+                .eq("issue_id", body.issue_id)\
+                .eq("is_paid", False)\
+                .execute()
+            
+            if existing_fine.data:
+                return jsonify({
+                    "error": f"An active (unpaid) fine already exists for Issue ID {body.issue_id}. Duplicate entries are not allowed."
+                }), 400
+
         # Fine payload with your newly planned 'cms_id' column
         fine_payload = {
             "user_id": str(real_user_id),       # Table core foreign key (UUID)
-            "cms_id": str(body.cms_id),         # 🌟 Naya column jo aap fine table mein add kar rahe ho
+            "cms_id": str(body.cms_id),         # Naya column jo aap fine table mein add kar rahe ho
             "issue_id": body.issue_id if body.issue_id else None,
             "return_id": None,
             "fine_amount": body.fine_amount,
@@ -1816,7 +1840,6 @@ def add_manual_fine():
 
     except Exception as e:
         return jsonify({"error": f"Failed to execute manual fine tracking: {str(e)}"}), 500
-        
 
 
 # =========================
