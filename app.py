@@ -53,21 +53,6 @@ if os.getenv("HF_TOKEN"):
 
 app = Flask(__name__)
 
-# CORS(
-#     app,
-#     resources={
-#         r"/api/*": {
-#             "origins": [
-#                 "http://localhost:3000",
-#                 "https://libgenius.netlify.app"
-#             ]
-#         }
-#     },
-#     supports_credentials=True,
-#     allow_headers=["Content-Type", "Authorization"],
-#     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"]
-# )
-
 CORS(
     app,
     resources={
@@ -152,153 +137,6 @@ def save_fcm_token():
     except Exception as e:
         return jsonify({"error": f"Database integration failed: {str(e)}"}), 500
 
-# # ==================================================================================================
-# # BACKGROUND SCHEDULER - AUTO FINE EVERY DAY AT MIDNIGHT
-# # ==================================================================================================
-# def calculate_daily_fines():
-#     """
-#     Checks overdue books daily.
-#     Creates/updates fines when due date crosses.
-#     """
-
-#     with app.app_context():
-#         try:
-#             # Today's date
-#             today = date.today()
-
-#             print(f"\n[SCHEDULER] Running Daily Fine Check")
-#             print(f"[SCHEDULER] Today's Date: {today}")
-
-#             # Only issued books
-#             issued_res = (
-#                 supabase.table("issued_books")
-#                 .select("*")
-#                 .eq("status", "issued")
-#                 .execute()
-#             )
-
-#             if not issued_res.data:
-#                 print("[SCHEDULER] No issued books found")
-#                 return
-
-#             print(f"[SCHEDULER] Found {len(issued_res.data)} issued books")
-
-#             # Check every issued book
-#             for issue in issued_res.data:
-
-#                 issue_id = issue["issue_id"]
-#                 user_id = issue["user_id"]
-
-#                 print(f"\nChecking Issue ID: {issue_id}")
-
-#                 # Convert due date to date object
-#                 due_date = date.fromisoformat(issue["due_date"])
-
-#                 print(f"Due Date: {due_date}")
-
-#                 # If due date is crossed
-#                 if today > due_date:
-
-#                     # Overdue days calculate karo
-#                     overdue_days = (today - due_date).days
-
-#                     # Rs.30 per day fine
-#                     fine_amount = overdue_days * 30
-
-#                     print(
-#                         f"OVERDUE: {overdue_days} days | Fine: Rs.{fine_amount}"
-#                     )
-
-#                     # Check if unpaid fine already exists
-#                     existing_fine = (
-#                         supabase.table("fine")
-#                         .select("*")
-#                         .eq("issue_id", issue_id)
-#                         .eq("is_paid", False)
-#                         .execute()
-#                     )
-
-#                     # If fine already exists, update it
-#                     if existing_fine.data:
-
-#                         print(
-#                             f"[SCHEDULER] Updating Fine for Issue ID {issue_id}"
-#                         )
-
-#                         update_res = (
-#                             supabase.table("fine")
-#                             .update({
-#                                 "fine_amount": fine_amount,
-#                                 "fine_date": today.isoformat(),
-#                                 "paid_date": None 
-#                             })
-#                             .eq("issue_id", issue_id)
-#                             .eq("is_paid", False)
-#                             .execute()
-#                         )
-
-#                         print(
-#                             f"[SCHEDULER] Fine Updated Successfully"
-#                         )
-
-#                     # Warna naya fine create karo
-#                     else:
-
-#                         print(
-#                             f"[SCHEDULER] Creating New Fine for Issue ID {issue_id}"
-#                         )
-
-#                         insert_res = (
-#                             supabase.table("fine")
-#                             .insert({
-#                                 "user_id": user_id,
-#                                 "issue_id": issue_id,
-#                                 "return_id": None,
-#                                 "fine_amount": fine_amount,
-#                                 "fine_date": today.isoformat(),
-#                                 "is_paid": False,
-#                                 "paid_date": None
-#                             })
-#                             .execute()
-#                         )
-
-#                         print(
-#                             f"[SCHEDULER] New Fine Added Successfully"
-#                         )
-
-#                 else:
-#                     print(
-#                         f"[SCHEDULER] Book is not overdue yet"
-#                     )
-
-#             print("\n[SCHEDULER] Daily Fine Check Completed Successfully")
-
-#         except Exception as e:
-#             import traceback
-
-#             print("\n[SCHEDULER] ERROR OCCURRED")
-#             traceback.print_exc()
-
-
-# # ==================================================
-# # Scheduler Setup
-# # ==================================================
-
-# scheduler = BackgroundScheduler()
-
-# # Roz raat 12 baje chalega
-# scheduler.add_job(
-#     func=calculate_daily_fines,
-#     trigger="cron",
-#     hour=0,
-#     minute=0,
-#     id="daily_fine_job",
-#     replace_existing=True
-# )
-
-# scheduler.start()
-
-# print("[SCHEDULER] Daily Fine Scheduler Started")
 
 # ================================
 # SUPABASE CONFRIGURATION
@@ -345,6 +183,8 @@ def send_email_async(msg):
 class SignupRequest(BaseModel):
     cms_id: str
     password: str
+    fcm_token: Optional[str] = None
+
 
 class VerifyOTPRequest(BaseModel):
     otp: str
@@ -370,7 +210,6 @@ def signup():
  
     student = student_check.data[0]
  
-    # Email automatically students table se nikalo
     student_email = student.get("email")
     if not student_email:
         return jsonify({"error": "No email found for this CMS in student record"}), 400
@@ -382,7 +221,7 @@ def signup():
     hashed_pw = bcrypt.hashpw(body.password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
     otp = str(random.randint(100000, 999999))
  
-    # Users table mein insert karo - student ka sara data bhi saath
+    # 🔥 Yahan fcm_token automatically insert ho jayega agar request mein aaya toh
     insert_res = supabase.table("users").insert({
         "cms_id": body.cms_id,
         "email": student_email,
@@ -397,7 +236,8 @@ def signup():
         "semester": student.get("semester"),
         "campus": student.get("campus"),
         "date_of_birth": student.get("date_of_birth"),
-        "phone_no": student.get("phone_no")
+        "phone_no": student.get("phone_no"),
+        "fcm_token": body.fcm_token  
     }).execute()
  
     try:
@@ -412,7 +252,7 @@ def signup():
         }), 201
     except Exception as e:
         return jsonify({"error Failed to send email": str(e)}), 500
- 
+
 # =========================
 # 2. VERIFY OTP                                                                                                                2
 # =========================
@@ -2114,15 +1954,14 @@ def drop_book():
     if is_admin:
         if not body.user_id:
             return jsonify({"error": "Admin ke liye user_id zaroori hai"}), 400
-        user_res = supabase.table("users").select("user_id", "student_name", "cms_id").eq("user_id", body.user_id).execute()
+        user_res = supabase.table("users").select("user_id", "student_name", "cms_id", "fcm_token").eq("user_id", body.user_id).execute()
         if not user_res.data:
             return jsonify({"error": "User not found"}), 404
         user = user_res.data[0]
         user_id = user["user_id"]
     else:
-        # User drop own book using cms_id from token
         cms_id = identity
-        user_res = supabase.table("users").select("user_id", "student_name", "cms_id").eq("cms_id", cms_id).execute()
+        user_res = supabase.table("users").select("user_id", "student_name", "cms_id", "fcm_token").eq("cms_id", cms_id).execute()
         if not user_res.data:
             return jsonify({"error": "User not found"}), 404
         user = user_res.data[0]
@@ -2140,6 +1979,7 @@ def drop_book():
  
     issue = issue_res.data[0]
     issue_id = issue["issue_id"]
+    book = book_res.data[0] # Get book info for notification
  
     # Late return check
     from datetime import date as date_type
@@ -2165,12 +2005,19 @@ def drop_book():
     }).eq("issue_id", issue_id).execute()
  
     # Book quantity increase
-    book = book_res.data[0]
     new_quantity = book["quantity"] + 1
     supabase.table("book").update({
         "quantity": new_quantity,
         "status": "available"
     }).eq("book_id", body.book_id).execute()
+
+    # ==========================================================
+    # 🌟 NOTIFICATION: Book Returned Successfully
+    # ==========================================================
+    if user.get("fcm_token"):
+        notif_title = "Book Returned Successfully! 📚"
+        notif_body = f"Hi {user['student_name']}, you have successfully returned '{book['title']}'."
+        send_fcm_notification(fcm_token=user['fcm_token'], title=notif_title, body=notif_body)
  
     return jsonify({
         "message": "Book dropped successfully",
@@ -2189,11 +2036,11 @@ def drop_book():
 
 @app.route("/api/cron/send-due-reminders", methods=["GET"])
 def send_due_reminders():
-    # 1. Kal ki date nikaalyein (Target Date)
+    # 1. Calculate the target date (tomorrow)
     tomorrow = (datetime.now(timezone.utc) + timedelta(days=1)).date().isoformat()
     
     try:
-        # 2. 'issued_books' table se woh records nikalein jinki due_date KAL hai aur status STILL 'issued' hai
+        # 2. Fetch records from 'issued_books' where due_date is tomorrow and status is still 'issued'
         due_books = supabase.table("issued_books")\
             .select("user_id, book_id, due_date")\
             .eq("due_date", tomorrow)\
@@ -2205,32 +2052,32 @@ def send_due_reminders():
 
         sent_count = 0
         
-        # 3. Loop chalayein har record par aur notification bhejein
+        # 3. Loop through each record and send a notification
         for record in due_books.data:
             user_id = record["user_id"]
             book_id = record["book_id"]
             
-            # User ka FCM Token aur Name nikalein
+            # Retrieve user details (Name, FCM Token) and book title
             user_res = supabase.table("users").select("student_name", "fcm_token").eq("user_id", user_id).execute()
-            # Book ka Title nikalein
             book_res = supabase.table("book").select("title").eq("book_id", book_id).execute()
             
             if user_res.data and book_res.data:
                 user_data = user_res.data[0]
                 book_title = book_res.data[0].get("title", "Library Book")
                 user_fcm_token = user_data.get("fcm_token")
-                student_name = user_data.get("student_name")
+                student_name = user_data.get("student_name", "Student")
                 
-                # Agar user ka FCM token database mein majood hai
+                # Check if the user has a valid FCM token
                 if user_fcm_token:
-                    notif_title = "🚨 Library Return Reminder!"
-                    notif_body = f"Hi {student_name}, your issued book '{book_title}' is due tomorrow ({tomorrow}). Please return it to avoid late fees."
+                    notif_title = "⚠️ Urgent: Book Due Tomorrow!"
+                    # Clearly state that there is only 1 day left before the book becomes overdue
+                    notif_body = f"Hi {student_name}, only 1 day remains for your book '{book_title}' before it becomes overdue. Please return it to avoid late fees."
                     
-                    # Firebase function trigger kiya
+                    # Trigger the Firebase notification
                     send_fcm_notification(fcm_token=user_fcm_token, title=notif_title, body=notif_body)
                     sent_count += 1
 
-        return jsonify({"message": f"Successfully sent {sent_count} reminder notifications."}), 200
+        return jsonify({"message": f"Successfully sent {sent_count} overdue warning notifications."}), 200
 
     except Exception as e:
         print(f"CRON ERROR: {str(e)}")
